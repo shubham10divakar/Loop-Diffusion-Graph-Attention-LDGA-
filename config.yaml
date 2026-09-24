@@ -1,0 +1,84 @@
+# LDGA (Loop Diffusion Graph Attention) on LoopViT (arXiv:2602.02156) for image classification.
+# Edit here, or override any key on the command line (e.g. --loop-steps 6).
+# Keys use underscores; CLI flags use dashes.
+
+# ---------------- data ----------------
+dataset: null                  # folder name; searched under data_root, then datasets/ and dataset/
+data_root: datasets
+train_dir: null                # set this to bypass the dataset-name lookup
+val_dir: null                  # optional; if null, val_split of train is held out
+num_classes: null              # null = every class folder; N = use N of them
+class_selection: first         # first (alphabetical) | random (seeded) when N < total
+classes: null                  # or an explicit list, e.g. [cat, dog, horse]
+max_per_class: null            # cap images per class (null = all)
+val_split: 0.1
+augment: basic                 # none | basic | trivial
+num_workers: 4                 # use 0 on Windows if worker startup stalls
+
+# ---------------- model ----------------
+image_size: 224
+patch_size: 16
+dim: 384                       # 408 = compute-matched vanilla baseline for LDGA M=3 (sdpa)
+core_depth: 4                  # B: distinct hybrid blocks in the weight-tied core
+loop_steps: 3                  # T: iterations of the core during training
+num_heads: 6
+mlp_ratio: 4.0                 # ConvGLU hidden = dim * mlp_ratio
+dropout: 0.0
+attn_dropout: 0.0              # must be 0 when diffusion != none
+drop_path: 0.1
+ffn: hybrid                    # hybrid (ConvGLU + 3x3 DW-Conv) | vanilla (plain MLP ablation)
+rope: true                     # 2D rotary embeddings
+step_embedding: true           # e_t in z_{t+1} = M(z_t + e_t)
+num_cls_tokens: 1              # the paper's task tokens; they bypass the DW-Conv
+pool: cls                      # cls | mean
+
+# ---------------- LDGA: loop diffusion graph attention ----------------
+variant: null                  # preset: loopvit | ldga | ldga-gpr | ldga-gpr-shared | ldga-ppr | ldga-heat
+diffusion: gpr                 # none (vanilla LoopViT) | ppr | heat | gpr (learned filter, main)
+diff_hops: 3                   # M: hops of the polynomial filter sum_m theta_m A^m V
+diff_heads: -1                 # -1 = all heads; k = diffuse only the first k heads
+diff_schedule: per_step        # shared (one theta per block/head) | per_step (one per loop step too)
+diff_renorm: true              # renormalise truncated ppr/heat coefficients to sum to 1
+diff_impl: sdpa                # sdpa (fused, never materialises A) | dense (fp32 A, exact; analysis)
+ppr_alpha_init: 0.2            # ppr teleport alpha (also the gpr "ppr" init)
+heat_tau_init: 1.0             # heat-kernel diffusion time tau
+gpr_init: vanilla              # vanilla (theta = (0,1,0,..): exactly LoopViT at init) | ppr
+loop_relax: false              # learnable Euler step eta_t (ablation, eq. C2)
+
+# ---------------- dynamic exit (inference) ----------------
+exit_mode: entropy             # entropy | fixedpoint | both | either
+exit_tau: 0.05                 # halt a sample once its predictive entropy (nats) < tau
+exit_fp_eps: 0.01              # ... or once ||z_t - z_{t-1}|| / ||z_{t-1}|| < eps
+min_loop_steps: 1
+max_loop_steps: 0              # inference budget; 0 = loop_steps. Try 2x loop_steps.
+eval_dynamic_exit: true        # report exit accuracy / steps / block applications each epoch
+eval_extrapolate: true         # report val accuracy at T+1..2T each epoch
+eval_diag_images: 512          # val images for Dirichlet energy / effective rank per step (0 = off)
+progress: true                 # live progress bar per train epoch / val pass (needs tqdm)
+
+# ---------------- training ----------------
+epochs: 100
+batch_size: 64
+lr: 0.0005
+min_lr: 0.00001
+weight_decay: 0.05             # never applied to theta / alpha / tau / eta
+warmup_epochs: 5
+label_smoothing: 0.1
+grad_clip: 1.0
+deep_supervision: 0.0          # >0 also supervises intermediate steps (not in the paper)
+amp: true
+seed: 42
+device: auto                   # auto | cuda | mps | cpu
+output_dir: null               # null = runs/<variant>_<dataset>
+
+# ---------------- checkpoints / resume ----------------
+resume: auto                   # auto = continue from <output_dir>/last.pt if present | path | null
+save_every: 1                  # checkpoints/epoch_XXX.pt every N epochs (0 = off)
+keep_checkpoints: 0            # keep only the newest N epoch checkpoints (0 = keep all)
+save_every_steps: 0            # also refresh last.pt every N optimizer steps inside an epoch
+
+# ---------------- early stopping ----------------
+early_stopping: true
+patience: 15                   # epochs without improvement before stopping
+min_delta: 0.0                 # improvement that counts as progress
+monitor: val_acc               # val_acc | val_loss

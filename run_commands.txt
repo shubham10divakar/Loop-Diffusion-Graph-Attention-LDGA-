@@ -1,0 +1,38 @@
+pip install -r requirements.txt
+python -m pytest tests -q
+
+# ---- model summary (params + analytic GFLOPs) ----
+python train.py --config config.yaml --summary-only --num-classes 38
+python train.py --config config.yaml --summary-only --num-classes 38 --variant loopvit --dim 408
+
+# ---- LDGA-gpr per_step (new variant) on each dataset ----
+python train.py --config config.yaml --dataset plantodc
+python train.py --config config.yaml --dataset plantvillage
+python train.py --config config.yaml --dataset cub200
+python train.py --config config.yaml --dataset flowers102
+python train.py --config config.yaml --dataset aircraft
+python train.py --config config.yaml --dataset food101 --save-every-steps 500
+
+# ---- main comparison (design doc C, sec. 11.2) ----
+python train.py --config config.yaml --dataset plantodc --variant loopvit
+python train.py --config config.yaml --dataset plantodc --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plantodc
+python train.py --config config.yaml --dataset plantodc --variant ldga-ppr
+python train.py --config config.yaml --dataset plantodc --variant ldga-heat
+python train.py --config config.yaml --dataset plantodc --variant ldga
+python train.py --config config.yaml --dataset plantodc --variant ldga-gpr-shared
+
+# ---- resume (re-run the same command; resume: auto) or a specific checkpoint ----
+python train.py --config config.yaml --dataset plantodc
+python train.py --config config.yaml --dataset plantodc --resume runs/ldga_plantodc/checkpoints/epoch_020.pt
+
+# ---- predict / analyze ----
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/ --dynamic-exit --exit-mode both
+python analyze_ldga.py --ckpt runs/loopvit_plantodc/best.pt runs/ldga-ppr_plantodc/best.pt runs/ldga-heat_plantodc/best.pt runs/ldga_plantodc/best.pt --labels vanilla ppr heat gpr --out-dir analysis/plantodc
+
+# ---- replication: PlantVillage (same settings for every variant) ----
+python train.py --config config.yaml --dataset plantvillage --variant loopvit         --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/loopvit_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant loopvit --dim 408 --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/loopvit-cm_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga            --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-gpr-shared --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-gpr-shared_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-ppr        --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-ppr_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-heat       --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-heat_plantvillage

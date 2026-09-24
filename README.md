@@ -1,0 +1,348 @@
+# LDGA — Loop Diffusion Graph Attention for Looped Vision Transformers
+
+> *Looping as Diffusion: Learnable Spectral Filters on Attention Graphs in Looped Vision Transformers*
+
+This repo implements **LDGA (Loop Diffusion Graph Attention)** on top of **LoopViT**
+(Shu et al., [arXiv:2602.02156](https://arxiv.org/abs/2602.02156)), ported to image
+classification. The full design is in
+[`design_C_loop_diffusion_graph_attention.md`](design_C_loop_diffusion_graph_attention.md).
+
+A softmax attention matrix `A` is row-stochastic, so `A·V` is a one-hop **low-pass** filter
+on the attention graph. LoopViT applies that filter `B·T` times with tied weights, which is
+the worst case for oversmoothing. LDGA replaces `A·V` with a learnable **polynomial graph
+filter** and reads the loop as discretised diffusion time:
+
+```
+Attn_LDGA(V) = Σ_{m=0}^{M} θ_m · A^m V                                   (eq. C1)
+
+ppr   θ_m = α(1−α)^m,        α = σ(a)          personalised PageRank (low-pass)
+heat  θ_m = e^{−τ} τ^m / m!,  τ = softplus(s)   heat kernel exp(−τ(I−A)) (low-pass)
+gpr   free θ_m                                  learned; can be high-pass, e.g. (1,−1) = (I−A)V
+```
+
+* `gpr` starts at θ = (0, 1, 0, …), so at initialisation LDGA-gpr **is** vanilla LoopViT.
+* It adds only `(M+1)` scalars per head per block (96 for the default config with a shared
+  schedule, 288 with `per_step`).
+* The learned θ are directly readable as a **frequency response** `g(λ) = Σ θ_m λ^m`.
+* **Fixed-point exit:** a sample halts once its state stops moving,
+  `‖z_t − z_{t−1}‖ / ‖z_{t−1}‖ < ε`. This can be combined with the paper's entropy exit.
+* Optional **loop relaxation** (eq. C2): `z_{t+1} = z_t + η_t (M_θ(z_t + e_t) − z_t)`, η = 1 at init.
+
+---
+
+## 1. Files
+
+| file | what |
+|---|---|
+| `loop_vit.py` | the model: `LoopViT` + `LoopViTConfig` with the LDGA filters, loop relaxation, fixed-point exit, batch-compacting `dynamic_forward` and analytic FLOP count |
+| `ldga_stats.py` | diagnostics shared by model, training and analysis: frequency response, attention spectrum, Dirichlet energy, effective rank, relative state change |
+| `train.py` | training: YAML + CLI, variants, early stopping, checkpoint every epoch, resume (also mid-epoch), per-epoch LDGA logging |
+| `analyze_ldga.py` | analysis figures + JSON (frequency responses, θ heatmaps, oversmoothing, spectra, extrapolation, exit Pareto, CLS maps, η) |
+| `predict.py` | run a checkpoint on images, with loop-count override, dynamic exit and per-step state change |
+| `data.py` | dataset lookup (`datasets/` and `dataset/`), ImageFolder pipeline, resumable sampler |
+| `downloads.py` | fetch aircraft / cub200 / flowers102 / food101 / cars into the `datasets/` layout |
+| `config.yaml` | every setting in one place |
+| `tests/test_ldga.py` | tests T1–T12 from the design doc (+ extras) |
+| `tests/loop_vit_reference.py` | the original, unmodified LoopViT, used to prove baseline equivalence |
+
+## 2. Variants
+
+Select with `--variant` (a preset for `--diffusion` and `--diff-schedule`) or set the flags directly.
+
+| `--variant` | `diffusion` | `diff_schedule` | what it is |
+|---|---|---|---|
+| `ldga` / `ldga-gpr` | `gpr` | `per_step` | **LDGA, main method.** Learned filter with a loop-time schedule. Default in `config.yaml` |
+| `ldga-gpr-shared` | `gpr` | `shared` | learned filter, one set per (block, head): isolates the value of the step schedule |
+| `ldga-ppr` | `ppr` | `shared` | fixed-shape low-pass diffusion (PPR) |
+| `ldga-heat` | `heat` | `shared` | fixed-shape low-pass diffusion (heat kernel) |
+| `loopvit` | `none` | – | vanilla LoopViT baseline, bit-identical to the original code (test T1) |
+
+**Compute-matched baseline.** LDGA adds FLOPs (≈ +6 % per hop with `sdpa`). Vanilla LoopViT at
+`--dim 408` costs 13.54 GFLOPs/image vs 13.48 for LDGA-gpr with M = 3 (`sdpa`, 224/16), against
+12.05 for vanilla at `dim 384`. `train.py --summary-only` prints the analytic count for any config.
+
+Ablation switches (design doc §11.3):
+
+| flag | values | ablation |
+|---|---|---|
+| `--diff-hops` | `2`, `3`, `4` | filter order M |
+| `--diff-heads` | `-1` / `k` | diffuse all heads or only the first k |
+| `--gpr-init` | `vanilla` / `ppr` | gpr initialisation |
+| `--diff-renorm` | `true` / `false` | renormalise truncated ppr / heat coefficients |
+| `--loop-relax` | `false` / `true` | learnable Euler step η_t |
+| `--ffn vanilla` | | does diffusion matter more without the ConvGLU's local prior? |
+| `--loop-steps` | `2`, `3`, `4` | training T (extrapolation is logged every epoch) |
+| `--exit-mode` | `entropy` / `fixedpoint` / `both` / `either` | dynamic-exit criterion |
+| `--diff-impl` | `sdpa` / `dense` | same function; `dense` materialises A once in fp32 |
+
+## 3. Install
+
+```bash
+pip install -r requirements.txt
+```
+
+Tested with Python 3.14, torch 2.14 + CUDA 12.6 on an RTX 3060 (Windows 11). On Ampere
+cards, AMP uses bf16.
+
+## 4. Datasets
+
+Copy the `dataset/` and `datasets/` folders into this repo's root (for example from the
+design A repo). The loader searches both:
+
+```
+datasets/aircraft/{train,test}/<class>/*.jpg
+datasets/cub200/{train,test}/<class>/*.jpg
+datasets/flowers102/{train,test}/<class>/*.jpg
+datasets/food101/{train,test}/<class>/*.jpg
+datasets/plantodc/{train,test}/<class>/*.jpg          # PlantDoc
+dataset/plantvillage/color/<class>/*.jpg              # flat: 10 % held out for validation
+```
+
+* `--dataset <name>` is looked up under `--data-root` (default `datasets`), then `datasets/`,
+  then `dataset/`.
+* `train/` + `test/` (or `val/`, `valid/`) are found automatically.
+* A folder that only wraps the class folders in one sub-folder, such as
+  `plantvillage/color/`, is descended into automatically.
+* A flat folder (class folders directly inside it) gets a stratified `--val-split` hold-out.
+* `--train-dir` / `--val-dir` accept any path on disk and skip the name lookup.
+* On Windows, image paths longer than the 260-character `MAX_PATH` limit are opened through
+  the `\\?\` long-path prefix.
+
+Fetch the public benchmarks again if needed:
+
+```bash
+python downloads.py --dataset cub200 flowers102 aircraft food101
+```
+
+## 5. Commands
+
+All commands below run from the repo root. `run_commands.txt` has them in one place.
+
+### 5.1 Tests (CPU, a few seconds; T11 also uses CUDA fp16 when available)
+
+```bash
+python -m pytest tests -q
+```
+
+### 5.2 Model summary (no data needed)
+
+```bash
+python train.py --config config.yaml --summary-only --num-classes 38
+python train.py --config config.yaml --summary-only --num-classes 38 --variant loopvit --dim 408
+```
+
+### 5.3 Train the new variant (LDGA-gpr, per_step) on each dataset
+
+```bash
+python train.py --config config.yaml --dataset plantodc
+python train.py --config config.yaml --dataset plantvillage
+python train.py --config config.yaml --dataset cub200
+python train.py --config config.yaml --dataset flowers102
+python train.py --config config.yaml --dataset aircraft
+python train.py --config config.yaml --dataset food101
+```
+
+Each run writes to `runs/<variant>_<dataset>/`, for example `runs/ldga_plantodc/`.
+
+### 5.4 Main comparison (same dataset, every variant)
+
+```bash
+python train.py --config config.yaml --dataset plantodc --variant loopvit
+python train.py --config config.yaml --dataset plantodc --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plantodc
+python train.py --config config.yaml --dataset plantodc --variant ldga-ppr
+python train.py --config config.yaml --dataset plantodc --variant ldga-heat
+python train.py --config config.yaml --dataset plantodc --variant ldga
+python train.py --config config.yaml --dataset plantodc --variant ldga-gpr-shared
+```
+
+### 5.5 Ablations (give each its own `--output-dir`)
+
+```bash
+python train.py --config config.yaml --dataset plantodc --diff-hops 2              --output-dir runs/abl_M2
+python train.py --config config.yaml --dataset plantodc --diff-hops 4              --output-dir runs/abl_M4
+python train.py --config config.yaml --dataset plantodc --diff-heads 3             --output-dir runs/abl_heads3
+python train.py --config config.yaml --dataset plantodc --gpr-init ppr             --output-dir runs/abl_gpr_init_ppr
+python train.py --config config.yaml --dataset plantodc --variant ldga-ppr --diff-renorm false --output-dir runs/abl_ppr_norenorm
+python train.py --config config.yaml --dataset plantodc --loop-relax true          --output-dir runs/abl_relax
+python train.py --config config.yaml --dataset plantodc --ffn vanilla              --output-dir runs/abl_ffn_vanilla
+python train.py --config config.yaml --dataset plantodc --loop-steps 2             --output-dir runs/abl_T2
+python train.py --config config.yaml --dataset plantodc --seed 1 --output-dir runs/ldga_plantodc_s1   # seeds
+```
+
+### 5.6 Small / fast config (CIFAR-like, design doc §11.1)
+
+```bash
+python train.py --config config.yaml --dataset plantodc --image-size 32 --patch-size 4 --dim 192 --num-heads 6 --core-depth 4 --loop-steps 3
+```
+
+### 5.7 Subsets, epochs, early stopping
+
+```bash
+python train.py --config config.yaml --dataset plantvillage --num-classes 10 --max-per-class 300
+python train.py --config config.yaml --dataset plantvillage --classes Apple___Apple_scab Apple___Black_rot Apple___healthy
+python train.py --config config.yaml --dataset cub200 --epochs 200 --early-stopping true --patience 20 --min-delta 0.001 --monitor val_acc
+python train.py --config config.yaml --dataset cub200 --early-stopping false
+```
+
+### 5.8 Checkpoints and resume
+
+Every run saves:
+
+| file | when |
+|---|---|
+| `last.pt` | every epoch; every `--save-every-steps N` optimizer steps; and on Ctrl+C |
+| `best.pt` | whenever the early-stopping monitor improves |
+| `checkpoints/epoch_XXX.pt` | every `--save-every` epochs (default 1 = **every epoch**). `--keep-checkpoints N` keeps only the newest N |
+
+Each checkpoint stores the model, optimizer, AMP scaler, RNG states, LR-schedule step,
+early-stopping counter and the position inside the epoch. Writes are atomic.
+
+```bash
+# resume where you stopped: `resume: auto` is the default, so re-run the SAME command
+python train.py --config config.yaml --dataset plantodc
+
+# resume from a specific checkpoint
+python train.py --config config.yaml --dataset plantodc --resume runs/ldga_plantodc/checkpoints/epoch_020.pt
+python train.py --config config.yaml --dataset plantodc --resume runs/ldga_plantodc/best.pt
+
+# also save inside long epochs (e.g. food101), so a crash loses at most 500 steps
+python train.py --config config.yaml --dataset food101 --save-every-steps 500
+
+# train longer than originally planned: raise --epochs and re-run
+python train.py --config config.yaml --dataset plantodc --epochs 150
+
+# ignore an existing last.pt and start fresh (overwrites the run folder's logs)
+python train.py --config config.yaml --dataset plantodc --resume none
+```
+
+A mid-epoch resume skips exactly the batches already seen. On resume, rows in `log.csv` /
+`metrics.jsonl` from after the checkpoint are dropped. A run that already early-stopped
+refuses to continue unless you raise `--patience` or pass `--early-stopping false`. Resume
+also checks that the classes and model architecture match the checkpoint. Inference-only
+knobs (`exit_*`, `min/max_loop_steps`, and `diff_impl`, since `sdpa` and `dense` compute the
+same function) may change freely.
+
+### 5.9 Predict
+
+```bash
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images a.jpg --per-step           # prediction, entropy, state change per step
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images a.jpg --loop-steps 6       # extrapolate past T
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/ --dynamic-exit --exit-mode entropy --exit-tau 0.05
+python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/ --dynamic-exit --exit-mode both --exit-tau 0.1 --exit-fp-eps 0.005 --loop-steps 6
+```
+
+### 5.10 Analysis (design doc §8)
+
+```bash
+# compare vanilla vs the LDGA filters on the same validation split
+python analyze_ldga.py --ckpt runs/loopvit_plantodc/best.pt runs/ldga-ppr_plantodc/best.pt runs/ldga-heat_plantodc/best.pt runs/ldga_plantodc/best.pt \
+                       --labels vanilla ppr heat gpr --out-dir analysis/plantodc
+
+# a single run, more images, custom exit sweep
+python analyze_ldga.py --ckpt runs/ldga_cub200/best.pt --max-images 3000 --taus 0.01 0.05 0.1 0.3 --fp-eps 1e-3 1e-2 5e-2
+```
+
+Outputs:
+
+| file | content |
+|---|---|
+| `freq_response_<label>.png` | learned nominal `g(λ)` per block (and step), over the actual Re(λ) distribution of A |
+| `theta_<label>.png` | θ heatmaps (blocks × hops, per head [and step]) |
+| `oversmoothing.png` | Dirichlet energy and effective rank vs unrolled depth 1..B·2T |
+| `spectra_<label>.png` | \|λ\| histograms of A per step and the spectral gap `1 − |λ_2|` over steps |
+| `accuracy_per_step.png` | accuracy vs inference T = 1..2·T_train (extrapolation) |
+| `exit_pareto.png` | accuracy vs mean block applications for entropy / fixedpoint / both / either exits |
+| `cls_maps_<label>.png` | effective CLS→patch weights `Σ θ_m (A^m)[0,:]` per step on 8 fixed images |
+| `eta.png` | learned η_t (runs with `--loop-relax`) |
+| `summary.json` | every number behind the figures |
+
+### 5.11 Replication: PlantVillage runs
+
+Same settings as the design A replication (100 epochs, batch 16, checkpoint every epoch,
+early stop on val loss with patience 10, auto-resume). Only `--variant` and `--output-dir`
+change:
+
+```bash
+python train.py --config config.yaml --dataset plantvillage --variant loopvit         --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/loopvit_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant loopvit --dim 408 --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/loopvit-cm_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga            --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-gpr-shared --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-gpr-shared_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-ppr        --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-ppr_plantvillage
+python train.py --config config.yaml --dataset plantvillage --variant ldga-heat       --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-heat_plantvillage
+```
+
+## 6. What is logged every epoch
+
+```
+epoch  12/100 | lr 4.31e-04 | train loss 1.8123 acc 0.4712 | 212 img/s, 5.84 GB
+    val loss 1.6002 acc 0.5340 | acc per step [0.402 0.498 0.534] extrap [0.538 0.537 0.531]
+    entropy/step [1.912 1.405 1.101 1.050 1.041 1.040] | state change/step [nan 0.0412 0.0187 0.0121 0.0109 0.0105]
+    dirichlet/step [0.7514 0.7411 0.7290 0.7123 0.6920 0.6690] | eff. rank/step [24.3 24.3 24.4 24.4 24.4 24.4]
+    exit(entropy) acc 0.5310 @ 2.41 steps, 9.6 block apps/img, 10.87 GFLOPs/img (fixed depth 13.48)
+    theta mean/hop [+0.051 +0.912 -0.084 +0.013] | sum theta 0.892 | neg frac 0.31
+```
+
+* **acc per step / extrap:** validation accuracy after each step 1..T, then T+1..2T.
+* **state change/step:** mean `‖z_t − z_{t−1}‖ / ‖z_{t−1}‖`, the fixed-point exit signal.
+* **dirichlet / eff. rank:** oversmoothing of the patch tokens after each step (first
+  `--eval-diag-images` validation images).
+* **exit(...):** dynamic-exit accuracy, average steps, block applications actually executed
+  and the resulting analytic GFLOPs. The exit compacts the batch.
+* **theta:** mean θ per hop, mean `Σθ` and the fraction of negative coefficients (the H2
+  signal: does the model learn high-pass components?). `alpha` / `tau` for ppr / heat,
+  `eta/step` with `--loop-relax`.
+
+Files in `runs/<name>/`: `log.csv`, `metrics.jsonl` (full per-epoch record including raw θ,
+α/τ and η), `theta_heatmap.png` and `freq_response.png` (latest epoch), `config.json`
+(settings, parameter report and FLOPs), `last.pt`, `best.pt`, `checkpoints/`, and
+`run_history.log` (append-only record of every invocation).
+
+## 7. Configuration reference
+
+| group | keys (defaults) |
+|---|---|
+| data | `dataset`, `data_root: datasets`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4` |
+| model | `image_size: 224`, `patch_size: 16`, `dim: 384`, `core_depth: 4` (B), `loop_steps: 3` (T), `num_heads: 6`, `mlp_ratio: 4.0`, `dropout`, `attn_dropout`, `drop_path: 0.1`, `ffn: hybrid`, `rope: true`, `step_embedding: true`, `num_cls_tokens: 1`, `pool: cls` |
+| LDGA | `variant`, `diffusion: gpr`, `diff_hops: 3`, `diff_heads: -1`, `diff_schedule: per_step`, `diff_renorm: true`, `diff_impl: sdpa`, `ppr_alpha_init: 0.2`, `heat_tau_init: 1.0`, `gpr_init: vanilla`, `loop_relax: false` |
+| exit | `exit_mode: entropy`, `exit_tau: 0.05`, `exit_fp_eps: 0.01`, `min_loop_steps: 1`, `max_loop_steps: 0` (= T), `eval_dynamic_exit: true`, `eval_extrapolate: true`, `eval_diag_images: 512` |
+| training | `epochs: 100`, `batch_size: 64`, `lr: 5e-4`, `min_lr: 1e-5`, `weight_decay: 0.05`, `warmup_epochs: 5`, `label_smoothing: 0.1`, `grad_clip: 1.0`, `deep_supervision: 0.0`, `amp: true`, `seed: 42`, `device: auto`, `output_dir: null` |
+| checkpoints | `resume: auto`, `save_every: 1`, `keep_checkpoints: 0`, `save_every_steps: 0` |
+| early stopping | `early_stopping: true`, `patience: 15`, `min_delta: 0.0`, `monitor: val_acc` |
+
+## 8. Implementation notes
+
+* **Baseline behaviour is unchanged.** With `diffusion=none` and `loop_relax=false` the model
+  has exactly the original state-dict keys and produces bit-identical outputs (test T1).
+* **`sdpa` never materialises A.** `A^m V` is computed by feeding the previous hop back in as
+  the values of the same fused attention, so each hop recomputes `QKᵀ` (flash-friendly).
+  `dense` builds A once in fp32 with autocast disabled; both agree to 1e-5 (test T6).
+* **Coefficients are fp32.** θ is computed with autocast disabled; ppr / heat use
+  `lgamma` for `m!` in log space.
+* **Per-step schedules are identity-extrapolated.** θ (and η) are indexed with
+  `min(t, T_train−1)`, like the step embeddings, so a model trained at T=3 still runs at T=6
+  (test T7).
+* **No weight decay on θ / α / τ / η.** Decay would pull gpr towards θ = 0 rather than its
+  vanilla init.
+* **`attn_dropout` must be 0 with diffusion.** Per-hop dropout is not implemented, so the
+  config raises instead of silently doing something else.
+* **`dynamic_forward` compacts the batch.** It runs the core only on active samples. It
+  returns `exit_steps`, `entropy`, `fp_trace` and `block_apps`, and matches per-sample
+  reference runs (tests T10, T11).
+* **The frequency response is nominal.** A is non-symmetric; `g(λ)` is evaluated on the real
+  line and always plotted over the actual eigenvalue distribution (doc §13).
+
+## 9. Credits
+
+The base architecture is LoopViT:
+
+```bibtex
+@article{shu2026loopvit,
+  title={LoopViT: Scaling Visual ARC with Looped Transformers},
+  author={Shu, Wen-Jie and Qiu, Xuerui and Zhu, Rui-Jie and Chen, Harold Haodong and Liu, Yexin and Yang, Harry},
+  journal={arXiv preprint arXiv:2602.02156},
+  year={2026}
+}
+```
+
+LDGA, the fixed-point exit and this classification code are by Shubham Divakar.

@@ -1,0 +1,9 @@
+torch>=2.1
+torchvision>=0.16
+pyyaml
+pillow
+matplotlib     # theta / g(lambda) plots during training + analyze_ldga.py figures
+pytest         # tests/
+torchinfo      # optional: layer-by-layer table in the model summary
+tqdm           # optional: live progress bars during training
+scipy          # optional: only for downloads.py --dataset cars
