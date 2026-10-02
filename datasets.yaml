@@ -57,3 +57,10 @@ datasets:
   plantvillage:                  # 38 classes, flat
     path: plantvillage/color
     format: folder
+
+  rice-leaf-bd:                  # RiceLeafDiseaseBD: 9769 images, 6 classes, 1024x1024 (see DATASET_INFO.md there)
+    # "Original images" (clean photos), not "Annotated images": the annotated visuals have
+    # red bounding boxes drawn on them (a shortcut the model would learn), the annotated
+    # set has no Healthy class, and its YOLO box labels are for detection, not classification.
+    path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/RiceLeafDiseaseBD/RiceLeafDiseaseBD/Original images"
+    format: folder

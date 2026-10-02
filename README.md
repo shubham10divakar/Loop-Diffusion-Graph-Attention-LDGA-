@@ -109,8 +109,9 @@ cards, AMP uses bf16.
 
 ## 4. Datasets
 
-Datasets are read in place from design A's `dataset/` folder. Nothing is copied. Where each
-one lives and how it is labelled is set in **`datasets.yaml`** (config key `dataset_registry`):
+Datasets are read in place, mostly from design A's `dataset/` folder; nothing is copied.
+Where each one lives and how it is labelled is set in **`datasets.yaml`** (config key
+`dataset_registry`):
 
 | `--dataset` | source | classes | images |
 |---|---|---|---|
@@ -119,6 +120,7 @@ one lives and how it is labelled is set in **`datasets.yaml`** (config key `data
 | `cassava` | `train.csv` + `label_num_to_disease_map.json` | 5 | 21 397 |
 | `plantdoc` (= `plantodc`) | `train/` + `test/` folders, pooled | 27 | 2 920 |
 | `plantvillage` | `color/<class>/` folders | 38 | 54 305 |
+| `rice-leaf-bd` | RiceLeafDiseaseBD `Original images/<class>/` (§4.2) | 6 | 9 769 |
 
 **One protocol for every dataset:** all labelled images go into one pool, and `--val-split`
 (default 10 %) of each class is held out for validation. The split is stratified and seeded,
@@ -152,7 +154,43 @@ sets (plant-pathology, cassava) have no labels, so only their train CSV is used.
   * These come from the original Kaggle data and are kept as they are. Mention them in the
     paper. `dataset_stats/<name>/problems.csv` lists every file involved.
 
-### 4.2 Describing a dataset (images per class and more)
+### 4.2 RiceLeafDiseaseBD (`rice-leaf-bd`)
+
+Location: `D:/D/my docs/my docs/ideas/attention based works/Datasets/RiceLeafDiseaseBD/RiceLeafDiseaseBD/`.
+Full notes are in `DATASET_INFO.md` in that folder.
+
+| class | images | train | val |
+|---|---|---|---|
+| Blast | 1326 | 1193 | 133 |
+| Brown spot | 2178 | 1960 | 218 |
+| Healthy | 1575 | 1417 | 158 |
+| Leaf smut | 724 | 652 | 72 |
+| Rice Tungro | 2244 | 2020 | 224 |
+| Sheath blight | 1722 | 1550 | 172 |
+| **total** | **9769** | **8792** | **977** |
+
+* **Training uses `Original images/`, not `Annotated images ( visual with labels)/`.**
+  Classification needs one label per image, and the class folder is that label. The
+  annotated folder is for object detection:
+  * `labels/*.txt` are YOLO bounding boxes for lesions.
+  * `visuals/*.jpg` are the same photos with red boxes drawn on them; a model would learn
+    the boxes, not the disease.
+  * It has no `Healthy` class.
+* **Image properties:** every image is 1024 × 1024 RGB JPEG, 3.1 GB in total. The originals
+  were mostly 1600 × 1200 phone photos (`Dataset metadata.xlsx`).
+* **Imbalance:** mild, 3.1× (Leaf smut 724 vs Rice Tungro 2,244). There is no official
+  train / test split, so the usual 90 / 10 stratified split applies.
+* **Quality:** 0 corrupt files.
+* **Duplicates:** 39 duplicate pairs. **8 pairs carry different labels**, mostly
+  Rice Tungro ↔ Sheath blight, and 5 pairs straddle train / val. They are kept as is; the
+  list is in `DATASET_INFO.md` and `dataset_stats/rice-leaf-bd/problems.csv`.
+
+```bash
+python train.py --config config.yaml --dataset rice-leaf-bd
+python train.py --config config.yaml --dataset rice-leaf-bd --smote true
+```
+
+### 4.3 Describing a dataset (images per class and more)
 
 ```bash
 python describe_dataset.py --dataset plant-pathology-2021
@@ -186,8 +224,9 @@ Overview, with the default 90 / 10 split and seed 42:
 | cassava | 5 | 21397 | 19256 | 2141 | 1087 | 13158 | 12.1x | 800x600 | 2.384 |
 | plantdoc | 27 | 2920 | 2627 | 293 | 42 | 238 | 5.7x | 640x560 | 0.886 |
 | plantvillage | 38 | 54305 | 48875 | 5430 | 152 | 5507 | 36.2x | 256x256 | 0.792 |
+| rice-leaf-bd | 6 | 9769 | 8792 | 977 | 724 | 2244 | 3.1x | 1024x1024 | 3.086 |
 
-### 4.3 SMOTE for imbalanced classes (optional, `--smote true`)
+### 4.4 SMOTE for imbalanced classes (optional, `--smote true`)
 
 SMOTE (Chawla et al., 2002) adapted to images, the same method as design A. For every
 train class smaller than the target, synthetic images are added. Each one blends a real
@@ -222,7 +261,7 @@ python train.py --config config.yaml --dataset plant-pathology-2020 --smote true
     longer. `--smote-target median` adds only 5,177.
   * The neighbour search takes about 20 s on plant-pathology-2021.
 
-### 4.4 Lookup rules
+### 4.5 Lookup rules
 
 * To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
   file header documents the keys).
@@ -592,14 +631,14 @@ not "topology".
   * the dataset registry (`datasets.yaml`) with the pooled 90 / 10 split
   * the evaluation pipeline (`evaluate.py`, final evaluation at the end of training)
   * the dataset description (`describe_dataset.py`)
-  * optional SMOTE for minority classes (`--smote true`, §4.3)
+  * optional SMOTE for minority classes (`--smote true`, §4.4)
   * smoke runs of every variant, resume, predict, analyze and evaluate, including on
     `plant-pathology-2020` / `-2021`
 * **Data findings:**
   * plant-pathology-2021 is heavily imbalanced (55.5x), so report macro F1, MCC and balanced
     accuracy alongside accuracy
-  * both plant-pathology sets contain duplicate images with conflicting labels (§4.1); they
-    are kept as is
+  * both plant-pathology sets and RiceLeafDiseaseBD contain duplicate images with
+    conflicting labels (§4.1, §4.2); they are kept as is
 * **Next:** full training runs, starting with plant pathology (§5.0, §5.12). H1–H4 are untested.
 * **Open decision:** whether to drop the conflicting duplicates before splitting. Decide
   before the real runs, because it changes the split.

@@ -75,3 +75,13 @@ python train.py --config config.yaml --dataset plant-pathology-2020 --variant lo
 python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --save-every-steps 500
 python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --smote-target median --save-every-steps 500
 python evaluate.py --ckpt runs/ldga_plant-pathology-2020 runs/ldga_plant-pathology-2020_smote --labels LDGA LDGA+SMOTE --summary-dir evaluation/plant-pathology-2020-smote
+
+# ---- RiceLeafDiseaseBD (rice-leaf-bd: Original images, 6 classes, 9769 images) ----
+python describe_dataset.py --dataset rice-leaf-bd --verify --duplicates
+python train.py --config config.yaml --dataset rice-leaf-bd --variant loopvit
+python train.py --config config.yaml --dataset rice-leaf-bd --variant loopvit --dim 408 --output-dir runs/loopvit-cm_rice-leaf-bd
+python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga
+python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-ppr
+python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-heat
+python evaluate.py --ckpt runs/loopvit_rice-leaf-bd runs/loopvit-cm_rice-leaf-bd runs/ldga-ppr_rice-leaf-bd runs/ldga-heat_rice-leaf-bd runs/ldga-gpr-shared_rice-leaf-bd runs/ldga_rice-leaf-bd --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/rice-leaf-bd
