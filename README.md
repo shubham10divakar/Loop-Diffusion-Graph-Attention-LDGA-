@@ -57,6 +57,7 @@ weight-tied ViT** instead of a fixed input graph.
 | `loop_vit.py` | the model: `LoopViT` + `LoopViTConfig` with the LDGA filters, loop relaxation, fixed-point exit, batch-compacting `dynamic_forward` and analytic FLOP count |
 | `ldga_stats.py` | diagnostics shared by model, training and analysis: frequency response, attention spectrum, Dirichlet energy, effective rank, relative state change |
 | `train.py` | training: YAML + CLI, variants, early stopping, checkpoint every epoch, resume (also mid-epoch), per-epoch LDGA logging |
+| `evaluate.py` | paper metrics for any saved checkpoint (accuracy, balanced acc, precision / recall / specificity / F1, MCC, kappa, AUROC, AUPRC, log loss, Brier, ECE, bootstrap 95 % CIs), confusion matrix, ROC / PR / reliability plots, comparison tables (CSV / Markdown / LaTeX), training curves |
 | `analyze_ldga.py` | analysis figures + JSON (frequency responses, θ heatmaps, oversmoothing, spectra, extrapolation, exit Pareto, CLS maps, η) |
 | `predict.py` | run a checkpoint on images, with loop-count override, dynamic exit and per-step state change |
 | `data.py` | dataset registry lookup (folder + CSV labels), pooled stratified train/val split, resumable sampler |
@@ -285,7 +286,46 @@ python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/ --dyna
 python predict.py --ckpt runs/ldga_plantodc/best.pt --images some_folder/ --dynamic-exit --exit-mode both --exit-tau 0.1 --exit-fp-eps 0.005 --loop-steps 6
 ```
 
-### 5.10 Analysis (design doc §8)
+### 5.10 Evaluation: paper metrics from any checkpoint
+
+When training ends (finished or early-stopped), `best.pt` is evaluated automatically and
+the results go to `runs/<name>/eval/best/`. This is controlled by `final_eval: true` and
+`final_eval_ckpt: best | last | both`. `training_curves.png` is redrawn every epoch. Any
+checkpoint can be evaluated again later:
+
+```bash
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021                    # a run folder = its best.pt
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --which best last
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --which all        # every saved epoch + metrics_vs_epoch.png
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --epochs 10 20 30  # chosen epochs
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021/checkpoints/epoch_025.pt
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --loop-steps 6 --dynamic-exit   # extrapolation / exit
+python evaluate.py --curves runs/ldga_plant-pathology-2021                 # only redraw training_curves.png
+
+# comparison table across runs (CSV, Markdown and LaTeX)
+python evaluate.py --ckpt runs/loopvit_plant-pathology-2021 runs/loopvit-cm_plant-pathology-2021                           runs/ldga-ppr_plant-pathology-2021 runs/ldga-heat_plant-pathology-2021                           runs/ldga-gpr-shared_plant-pathology-2021 runs/ldga_plant-pathology-2021                    --labels LoopViT "LoopViT (dim 408)" LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr                    --summary-dir evaluation/plant-pathology-2021
+```
+
+Each checkpoint is scored on the same validation split it was selected on. The split is
+rebuilt from the settings saved in the checkpoint, and `--dataset` / `--dataset-registry`
+override them if the data has moved. Results go to `runs/<name>/eval/<checkpoint>[_T<steps>]/`:
+
+| file | content |
+|---|---|
+| `report.txt` | every metric (printed too), with 95 % CIs and a per-class table |
+| `metrics.json` | accuracy, balanced accuracy, top-3/5, precision / recall / F1 (macro, weighted, micro), specificity, MCC, Cohen's kappa, AUROC and AUPRC (one-vs-rest; macro, weighted, micro), log loss, Brier, ECE, bootstrap 95 % CIs (accuracy, macro F1, MCC, macro AUROC; `--bootstrap N`, default 1000), parameters, GFLOPs/image, measured img/s and ms/image; dynamic-exit accuracy / F1 / MCC / steps / GFLOPs with `--dynamic-exit` |
+| `per_class.csv` | support, precision, recall, specificity, F1, AUROC, AP per class |
+| `confusion_matrix.csv` / `.png` | counts and row-normalised |
+| `roc_curves.png`, `pr_curves.png` | one-vs-rest curves per class plus micro / macro averages |
+| `reliability.png` | calibration diagram with ECE |
+| `per_class_metrics.png` | precision / recall / F1 bars per class |
+| `predictions.csv` | image path, true label, prediction, confidence and all class probabilities |
+
+With several checkpoints, `summary.csv`, `summary.md` and `summary.tex` (a booktabs table)
+are written to `--summary-dir`, or to the run's `eval/` folder when every checkpoint comes
+from one run.
+
+### 5.11 Analysis (design doc §8)
 
 ```bash
 # compare vanilla vs the LDGA filters on the same validation split
@@ -310,7 +350,7 @@ Outputs:
 | `eta.png` | learned η_t (runs with `--loop-relax`) |
 | `summary.json` | every number behind the figures |
 
-### 5.11 Plant pathology (every variant, same pooled 90 / 10 split)
+### 5.12 Plant pathology (every variant, same pooled 90 / 10 split)
 
 ```bash
 python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit
@@ -327,14 +367,17 @@ python train.py --config config.yaml --dataset plant-pathology-2021 --variant ld
 python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-ppr
 python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-heat
 
-# compare them
+# paper metrics table (MCC, AUROC, F1, ... with CIs)
+python evaluate.py --ckpt runs/loopvit_plant-pathology-2021 runs/loopvit-cm_plant-pathology-2021 runs/ldga-ppr_plant-pathology-2021 runs/ldga-heat_plant-pathology-2021 runs/ldga-gpr-shared_plant-pathology-2021 runs/ldga_plant-pathology-2021                    --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/plant-pathology-2021
+
+# LDGA analysis figures
 python analyze_ldga.py --ckpt runs/loopvit_plant-pathology-2021/best.pt runs/ldga-ppr_plant-pathology-2021/best.pt runs/ldga-heat_plant-pathology-2021/best.pt runs/ldga_plant-pathology-2021/best.pt                        --labels vanilla ppr heat gpr --out-dir analysis/plant-pathology-2021
 ```
 
 Add `--save-every-steps 500` to the FGVC8 runs so that a crash loses at most 500 steps.
 `analyze_ldga.py` rebuilds the same validation split from the checkpoint's saved settings.
 
-### 5.12 Replication: PlantVillage runs
+### 5.13 Replication: PlantVillage runs
 
 Same settings as the design A replication (100 epochs, batch 16, checkpoint every epoch,
 early stop on val loss with patience 10, auto-resume). Only `--variant` and `--output-dir`
@@ -370,7 +413,9 @@ epoch  12/100 | lr 4.31e-04 | train loss 1.8123 acc 0.4712 | 212 img/s, 5.84 GB
   signal: does the model learn high-pass components?). `alpha` / `tau` for ppr / heat,
   `eta/step` with `--loop-relax`.
 
-Files in `runs/<name>/`: `log.csv`, `metrics.jsonl` (full per-epoch record including raw θ,
+Files in `runs/<name>/`: `training_curves.png` (loss, accuracy, LR, accuracy per loop step,
+θ sign, epoch time; redrawn every epoch, with the best epoch marked), `eval/` (final
+evaluation, §5.10), `log.csv`, `metrics.jsonl` (full per-epoch record including raw θ,
 α/τ and η), `theta_heatmap.png` and `freq_response.png` (latest epoch), `config.json`
 (settings, parameter report and FLOPs), `last.pt`, `best.pt`, `checkpoints/`, and
 `run_history.log` (append-only record of every invocation).
@@ -382,6 +427,7 @@ Files in `runs/<name>/`: `log.csv`, `metrics.jsonl` (full per-epoch record inclu
 | data | `dataset`, `dataset_registry: datasets.yaml`, `data_root: datasets`, `merge_splits: true`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4`, `fast_decode: true` |
 | model | `image_size: 224`, `patch_size: 16`, `dim: 384`, `core_depth: 4` (B), `loop_steps: 3` (T), `num_heads: 6`, `mlp_ratio: 4.0`, `dropout`, `attn_dropout`, `drop_path: 0.1`, `ffn: hybrid`, `rope: true`, `step_embedding: true`, `num_cls_tokens: 1`, `pool: cls` |
 | LDGA | `variant`, `diffusion: gpr`, `diff_hops: 3`, `diff_heads: -1`, `diff_schedule: per_step`, `diff_renorm: true`, `diff_impl: sdpa`, `ppr_alpha_init: 0.2`, `heat_tau_init: 1.0`, `gpr_init: vanilla`, `loop_relax: false` |
+| evaluation | `final_eval: true`, `final_eval_ckpt: best`, `eval_bootstrap: 1000` |
 | exit | `exit_mode: entropy`, `exit_tau: 0.05`, `exit_fp_eps: 0.01`, `min_loop_steps: 1`, `max_loop_steps: 0` (= T), `eval_dynamic_exit: true`, `eval_extrapolate: true`, `eval_diag_images: 512` |
 | training | `epochs: 100`, `batch_size: 64`, `lr: 5e-4`, `min_lr: 1e-5`, `weight_decay: 0.05`, `warmup_epochs: 5`, `label_smoothing: 0.1`, `grad_clip: 1.0`, `deep_supervision: 0.0`, `amp: true`, `seed: 42`, `device: auto`, `output_dir: null` |
 | checkpoints | `resume: auto`, `save_every: 1`, `keep_checkpoints: 0`, `save_every_steps: 0` |

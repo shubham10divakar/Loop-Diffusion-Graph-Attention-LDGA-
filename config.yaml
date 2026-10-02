@@ -59,6 +59,9 @@ eval_dynamic_exit: true        # report exit accuracy / steps / block applicatio
 eval_extrapolate: true         # report val accuracy at T+1..2T each epoch
 eval_diag_images: 512          # val images for Dirichlet energy / effective rank per step (0 = off)
 progress: true                 # live progress bar per train epoch / val pass (needs tqdm)
+final_eval: true               # at the end: full metric report (MCC, AUROC, F1, CIs, figures) -> <output_dir>/eval/
+final_eval_ckpt: best          # best | last | both
+eval_bootstrap: 1000           # bootstrap resamples for the 95 % CIs of the final evaluation (0 = off)
 
 # ---------------- training ----------------
 epochs: 100

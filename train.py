@@ -21,6 +21,12 @@ Train LoopViT / LDGA (Loop Diffusion Graph Attention) on an image-classification
 
 Command-line flags override the YAML, and the YAML overrides the defaults below.
 
+When training ends (done or early-stopped), best.pt is scored with evaluate.py's full
+report (accuracy, balanced accuracy, precision / recall / F1, MCC, kappa, AUROC, AUPRC,
+ECE, bootstrap CIs, confusion matrix, ROC / PR curves) into <output_dir>/eval/best/
+(--final-eval, --final-eval-ckpt). training_curves.png is redrawn every epoch.
+Any checkpoint can be scored later with evaluate.py.
+
 Checkpoints (all in --output-dir, default runs/<variant>_<dataset>):
     last.pt                   every epoch, every --save-every-steps steps, and on Ctrl+C
     best.pt                   whenever the early-stopping monitor improves
@@ -190,6 +196,12 @@ def get_args(argv=None):
                    help="val images used for Dirichlet energy / effective rank each epoch (0 = off)")
     t.add_argument("--progress", type=str2bool, default=True,
                    help="live progress bar for each train epoch and val pass (needs tqdm)")
+    t.add_argument("--final-eval", type=str2bool, default=True,
+                   help="when training ends, run evaluate.py's full metric report (MCC, AUROC, ...)")
+    t.add_argument("--final-eval-ckpt", choices=["best", "last", "both"], default="best",
+                   help="checkpoint(s) scored by the final evaluation")
+    t.add_argument("--eval-bootstrap", type=int, default=1000,
+                   help="bootstrap resamples for the final evaluation's 95%% CIs (0 = off)")
 
     c = p.add_argument_group("checkpoints / resume")
     c.add_argument("--resume", type=str_or_none, default=None,
@@ -405,6 +417,37 @@ def truncate_logs(out_dir: str, last_epoch: int):
             lines = [l for l in f if l.strip() and json.loads(l)["epoch"] <= last_epoch]
         with open(jpath, "w") as f:
             f.writelines(lines)
+
+
+def save_training_curves(out_dir: str):
+    try:
+        from evaluate import plot_training_curves
+        plot_training_curves(out_dir)
+    except Exception as ex:   # matplotlib missing / headless issues must not kill training
+        print(f"[warn] training curves not written: {ex}")
+
+
+def final_evaluation(args, model, val_loader, device):
+    """Full metric report (evaluate.py) for best.pt and/or last.pt -> <output_dir>/eval/<name>/."""
+    if not (args.final_eval and val_loader):
+        return
+    from evaluate import load_checkpoint, run_evaluation, write_summary
+    names = {"best": ["best"], "last": ["last"], "both": ["best", "last"]}[args.final_eval_ckpt]
+    results = []
+    for name in names:
+        path = os.path.join(args.output_dir, f"{name}.pt")
+        if not os.path.exists(path):
+            continue
+        m, ckpt = load_checkpoint(path, device)
+        results.append(run_evaluation(path, val_loader, device, os.path.join(args.output_dir, "eval", name),
+                                      m, ckpt, bootstrap=args.eval_bootstrap,
+                                      dynamic_exit=args.eval_dynamic_exit, amp=args.amp,
+                                      label=f"{os.path.basename(os.path.normpath(args.output_dir))}/{name}"))
+        del m
+    if len(results) > 1:
+        write_summary(results, os.path.join(args.output_dir, "eval"))
+    if results:
+        log_history("EVAL", f"final evaluation of {', '.join(names)} -> {args.output_dir}/eval/")
 
 
 def save_filter_plots(model, out_dir: str, epoch: int):
@@ -722,6 +765,7 @@ def main():
                    "eta": eta.tolist() if eta is not None else None}
             f.write(json.dumps(rec, default=lambda o: None) + "\n")
         save_filter_plots(model, args.output_dir, epoch)
+        save_training_curves(args.output_dir)
 
         ckpt = make_ckpt(epoch, 0, None, va.get("acc"))
         atomic_save(ckpt, last_path)
@@ -746,6 +790,7 @@ def main():
           f"-> {args.output_dir}/best.pt")
     log_history("END", f"{tag} after epoch {epoch}, best {monitor} {best_score:.4f}, "
                        f"best acc {best_acc:.4f}")
+    final_evaluation(args, model, val_loader, device)
 
 
 if __name__ == "__main__":

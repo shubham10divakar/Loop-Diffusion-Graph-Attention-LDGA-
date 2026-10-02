@@ -53,3 +53,13 @@ python train.py --config config.yaml --dataset plant-pathology-2021 --variant ld
 python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-gpr-shared
 python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-ppr
 python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-heat
+
+# ---- evaluation: paper metrics (MCC, AUROC, F1, kappa, CIs, confusion matrix, ROC/PR) ----
+# best.pt is evaluated automatically when training ends -> runs/<name>/eval/best/
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --which best last
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --which all
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --epochs 10 20 30
+python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --loop-steps 6 --dynamic-exit
+python evaluate.py --curves runs/ldga_plant-pathology-2021
+python evaluate.py --ckpt runs/loopvit_plant-pathology-2021 runs/loopvit-cm_plant-pathology-2021 runs/ldga-ppr_plant-pathology-2021 runs/ldga-heat_plant-pathology-2021 runs/ldga-gpr-shared_plant-pathology-2021 runs/ldga_plant-pathology-2021 --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/plant-pathology-2021

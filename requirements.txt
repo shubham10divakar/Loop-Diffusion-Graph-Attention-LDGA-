@@ -2,6 +2,7 @@ torch>=2.1
 torchvision>=0.16
 pyyaml
 pillow
+scikit-learn   # evaluate.py: MCC, AUROC, F1, ... (also the final evaluation of train.py)
 matplotlib     # theta / g(lambda) plots during training + analyze_ldga.py figures
 pytest         # tests/
 torchinfo      # optional: layer-by-layer table in the model summary

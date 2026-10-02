@@ -7,3 +7,4 @@ datasets/
 dataset/
 *.pt
 *.pt.tmp
+evaluation/
