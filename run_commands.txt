@@ -85,3 +85,13 @@ python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-gpr-s
 python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-ppr
 python train.py --config config.yaml --dataset rice-leaf-bd --variant ldga-heat
 python evaluate.py --ckpt runs/loopvit_rice-leaf-bd runs/loopvit-cm_rice-leaf-bd runs/ldga-ppr_rice-leaf-bd runs/ldga-heat_rice-leaf-bd runs/ldga-gpr-shared_rice-leaf-bd runs/ldga_rice-leaf-bd --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/rice-leaf-bd
+
+# ---- Paddy Doctor (paddy: train_images, 10 classes, 10407 images) ----
+python describe_dataset.py --dataset paddy --verify --duplicates
+python train.py --config config.yaml --dataset paddy --variant loopvit
+python train.py --config config.yaml --dataset paddy --variant loopvit --dim 408 --output-dir runs/loopvit-cm_paddy
+python train.py --config config.yaml --dataset paddy --variant ldga
+python train.py --config config.yaml --dataset paddy --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset paddy --variant ldga-ppr
+python train.py --config config.yaml --dataset paddy --variant ldga-heat
+python evaluate.py --ckpt runs/loopvit_paddy runs/loopvit-cm_paddy runs/ldga-ppr_paddy runs/ldga-heat_paddy runs/ldga-gpr-shared_paddy runs/ldga_paddy --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/paddy

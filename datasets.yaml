@@ -64,3 +64,9 @@ datasets:
     # set has no Healthy class, and its YOLO box labels are for detection, not classification.
     path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/RiceLeafDiseaseBD/RiceLeafDiseaseBD/Original images"
     format: folder
+
+  paddy:                         # Paddy Doctor (Kaggle paddy-disease-classification): 10407 images, 10 classes
+    # train_images/<class>/ is labelled; test_images/ (3469) has no labels and is not used.
+    # train.csv repeats the labels and adds rice variety and plant age (not used for training).
+    path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/paddy-disease-classification/train_images"
+    format: folder

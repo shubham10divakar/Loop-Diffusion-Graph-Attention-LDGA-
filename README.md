@@ -121,6 +121,7 @@ Where each one lives and how it is labelled is set in **`datasets.yaml`** (confi
 | `plantdoc` (= `plantodc`) | `train/` + `test/` folders, pooled | 27 | 2 920 |
 | `plantvillage` | `color/<class>/` folders | 38 | 54 305 |
 | `rice-leaf-bd` | RiceLeafDiseaseBD `Original images/<class>/` (§4.2) | 6 | 9 769 |
+| `paddy` | Paddy Doctor (Kaggle) `train_images/<class>/` (§4.2) | 10 | 10 407 |
 
 **One protocol for every dataset:** all labelled images go into one pool, and `--val-split`
 (default 10 %) of each class is held out for validation. The split is stratified and seeded,
@@ -154,7 +155,9 @@ sets (plant-pathology, cassava) have no labels, so only their train CSV is used.
   * These come from the original Kaggle data and are kept as they are. Mention them in the
     paper. `dataset_stats/<name>/problems.csv` lists every file involved.
 
-### 4.2 RiceLeafDiseaseBD (`rice-leaf-bd`)
+### 4.2 Rice datasets
+
+#### RiceLeafDiseaseBD (`rice-leaf-bd`)
 
 Location: `D:/D/my docs/my docs/ideas/attention based works/Datasets/RiceLeafDiseaseBD/RiceLeafDiseaseBD/`.
 Full notes are in `DATASET_INFO.md` in that folder.
@@ -188,6 +191,40 @@ Full notes are in `DATASET_INFO.md` in that folder.
 ```bash
 python train.py --config config.yaml --dataset rice-leaf-bd
 python train.py --config config.yaml --dataset rice-leaf-bd --smote true
+```
+
+#### Paddy Doctor (`paddy`)
+
+Location: `D:/D/my docs/my docs/ideas/attention based works/Datasets/paddy-disease-classification/`.
+Full notes are in `DATASET_INFO.md` in that folder.
+
+| class | images | train | val |
+|---|---|---|---|
+| bacterial_leaf_blight | 479 | 431 | 48 |
+| bacterial_leaf_streak | 380 | 342 | 38 |
+| bacterial_panicle_blight | 337 | 303 | 34 |
+| blast | 1738 | 1564 | 174 |
+| brown_spot | 965 | 869 | 96 |
+| dead_heart | 1442 | 1298 | 144 |
+| downy_mildew | 620 | 558 | 62 |
+| hispa | 1594 | 1435 | 159 |
+| normal | 1764 | 1588 | 176 |
+| tungro | 1088 | 979 | 109 |
+| **total** | **10407** | **9367** | **1040** |
+
+* **Training uses `train_images/<class>/`.** `test_images/` (3,469) is the Kaggle test set
+  and has no labels.
+* **`train.csv`** matches the folder labels exactly (0 mismatches). Its `variety` (rice
+  cultivar, 10 values, 67 % ADT45) and `age` (45–82 days) columns are not used.
+* **Images:** 480 × 640 portrait RGB JPEG (4 are landscape), 0.76 GB in total.
+* **Imbalance:** 5.2× (normal 1,764 vs bacterial_panicle_blight 337).
+* **Quality:** 0 corrupt files.
+* **Duplicates:** 74 duplicates in 72 groups, all within the same class, so none has
+  conflicting labels. 10 groups straddle train / val.
+
+```bash
+python train.py --config config.yaml --dataset paddy
+python train.py --config config.yaml --dataset paddy --smote true
 ```
 
 ### 4.3 Describing a dataset (images per class and more)
@@ -225,6 +262,7 @@ Overview, with the default 90 / 10 split and seed 42:
 | plantdoc | 27 | 2920 | 2627 | 293 | 42 | 238 | 5.7x | 640x560 | 0.886 |
 | plantvillage | 38 | 54305 | 48875 | 5430 | 152 | 5507 | 36.2x | 256x256 | 0.792 |
 | rice-leaf-bd | 6 | 9769 | 8792 | 977 | 724 | 2244 | 3.1x | 1024x1024 | 3.086 |
+| paddy | 10 | 10407 | 9367 | 1040 | 337 | 1764 | 5.2x | 480x640 | 0.763 |
 
 ### 4.4 SMOTE for imbalanced classes (optional, `--smote true`)
 
