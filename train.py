@@ -64,7 +64,7 @@ try:
 except ImportError:
     tqdm = None
 
-from data import build_dataloaders, resolve_dataset_dirs
+from data import build_dataloaders, collect_samples
 from ldga_stats import dirichlet_energy_grid, effective_rank, rel_state_change
 from loop_vit import LoopViT, LoopViTConfig, print_model_summary
 
@@ -107,6 +107,13 @@ def get_args(argv=None):
     d.add_argument("--dataset", type=str, default=None,
                    help="folder name under --data-root (datasets/ and dataset/ are also searched)")
     d.add_argument("--data-root", type=str, default="datasets")
+    d.add_argument("--dataset-registry", type=str_or_none, default="datasets.yaml",
+                   help="YAML that maps dataset names to folders / CSV label files")
+    d.add_argument("--merge-splits", type=str2bool, default=True,
+                   help="pool train/ + test/ (val/) and split with --val-split; "
+                        "false = use an existing test/val folder as validation")
+    d.add_argument("--fast-decode", type=str2bool, default=True,
+                   help="decode JPEGs at reduced scale (>= 2x image size)")
     d.add_argument("--train-dir", type=str, default=None, help="overrides --dataset")
     d.add_argument("--val-dir", type=str, default=None)
     d.add_argument("--num-classes", type=int_or_none, default=None, help="use N class folders (default: all)")
@@ -433,15 +440,15 @@ def main():
         class_names = [f"class_{i}" for i in range(args.num_classes or 10)]
         train_loader = val_loader = None
     else:
-        train_dir, val_dir = resolve_dataset_dirs(
-            args.data_root, args.dataset, args.train_dir, args.val_dir)
-        print(f"[data] train dir: {train_dir}")
-        print(f"[data] val dir:   {val_dir or '(held out from train)'}")
+        pool, val_pool, source = collect_samples(
+            args.dataset, args.data_root, args.dataset_registry, args.train_dir,
+            args.val_dir, args.merge_splits)
+        print(f"[data] source: {source}")
         train_loader, val_loader, class_names = build_dataloaders(
-            train_dir, val_dir, args.image_size, args.batch_size,
+            pool, val_pool, args.image_size, args.batch_size,
             args.num_workers, args.num_classes, args.class_selection, args.classes,
             args.max_per_class, args.val_split, args.augment, args.seed,
-            pin_memory=device.type == "cuda")
+            pin_memory=device.type == "cuda", fast_decode=args.fast_decode)
 
     # ---- model --------------------------------------------------------------
     mcfg = LoopViTConfig(

@@ -39,7 +39,8 @@ gpr   free θ_m                                  learned; can be high-pass, e.g.
 | `train.py` | training: YAML + CLI, variants, early stopping, checkpoint every epoch, resume (also mid-epoch), per-epoch LDGA logging |
 | `analyze_ldga.py` | analysis figures + JSON (frequency responses, θ heatmaps, oversmoothing, spectra, extrapolation, exit Pareto, CLS maps, η) |
 | `predict.py` | run a checkpoint on images, with loop-count override, dynamic exit and per-step state change |
-| `data.py` | dataset lookup (`datasets/` and `dataset/`), ImageFolder pipeline, resumable sampler |
+| `data.py` | dataset registry lookup (folder + CSV labels), pooled stratified train/val split, resumable sampler |
+| `datasets.yaml` | dataset registry: paths into design A's `dataset/` and each dataset's label format |
 | `downloads.py` | fetch aircraft / cub200 / flowers102 / food101 / cars into the `datasets/` layout |
 | `config.yaml` | every setting in one place |
 | `tests/test_ldga.py` | tests T1–T12 from the design doc (+ extras) |
@@ -86,25 +87,33 @@ cards, AMP uses bf16.
 
 ## 4. Datasets
 
-Copy the `dataset/` and `datasets/` folders into this repo's root (for example from the
-design A repo). The loader searches both:
+Datasets are read in place from design A's `dataset/` folder. Nothing is copied. Where each
+one lives and how it is labelled is set in **`datasets.yaml`** (config key `dataset_registry`):
 
-```
-datasets/aircraft/{train,test}/<class>/*.jpg
-datasets/cub200/{train,test}/<class>/*.jpg
-datasets/flowers102/{train,test}/<class>/*.jpg
-datasets/food101/{train,test}/<class>/*.jpg
-datasets/plantodc/{train,test}/<class>/*.jpg          # PlantDoc
-dataset/plantvillage/color/<class>/*.jpg              # flat: 10 % held out for validation
-```
+| `--dataset` | source | classes | images |
+|---|---|---|---|
+| `plant-pathology-2020` | FGVC7 `train.csv`, one-hot columns | 4 | 1 821 |
+| `plant-pathology-2021` | FGVC8 `train.csv`, space-separated labels; each combination is one class | 12 | 18 632 |
+| `cassava` | `train.csv` + `label_num_to_disease_map.json` | 5 | 21 397 |
+| `plantdoc` (= `plantodc`) | `train/` + `test/` folders, pooled | 27 | 2 920 |
+| `plantvillage` | `color/<class>/` folders | 38 | 54 305 |
 
-* `--dataset <name>` is looked up under `--data-root` (default `datasets`), then `datasets/`,
-  then `dataset/`.
-* `train/` + `test/` (or `val/`, `valid/`) are found automatically.
+**One protocol for every dataset:** all labelled images go into one pool, and `--val-split`
+(default 10 %) of each class is held out for validation. The split is stratified and seeded,
+so it is identical across variants and in `analyze_ldga.py`. With `--merge-splits true` (the
+default), a dataset's `train/` and `test/` (or `val/`, `valid/`) folders are pooled first. Use
+`--merge-splits false` to keep its own test folder as the validation set. The Kaggle test
+sets (plant-pathology, cassava) have no labels, so only their train CSV is used.
+
+* To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
+  file header documents the keys).
+* A name that is not in the registry is searched as a folder under the registry root,
+  `--data-root`, `datasets/` and `dataset/`.
 * A folder that only wraps the class folders in one sub-folder, such as
   `plantvillage/color/`, is descended into automatically.
-* A flat folder (class folders directly inside it) gets a stratified `--val-split` hold-out.
 * `--train-dir` / `--val-dir` accept any path on disk and skip the name lookup.
+* `--fast-decode true` (default) decodes JPEGs at the smallest 1/2^k scale that is still
+  ≥ 2 × image size. This matters for the 2–4k px plant-pathology and cassava photos.
 * On Windows, image paths longer than the 260-character `MAX_PATH` limit are opened through
   the `\\?\` long-path prefix.
 
@@ -134,6 +143,9 @@ python train.py --config config.yaml --summary-only --num-classes 38 --variant l
 ### 5.3 Train the new variant (LDGA-gpr, per_step) on each dataset
 
 ```bash
+python train.py --config config.yaml --dataset plant-pathology-2020
+python train.py --config config.yaml --dataset plant-pathology-2021
+python train.py --config config.yaml --dataset cassava
 python train.py --config config.yaml --dataset plantodc
 python train.py --config config.yaml --dataset plantvillage
 python train.py --config config.yaml --dataset cub200

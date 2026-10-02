@@ -3,17 +3,21 @@
 # Keys use underscores; CLI flags use dashes.
 
 # ---------------- data ----------------
-dataset: null                  # folder name; searched under data_root, then datasets/ and dataset/
+dataset: null                  # name from dataset_registry, e.g. plant-pathology-2020 | plant-pathology-2021
+                               # | cassava | plantdoc | plantvillage; else a folder under data_root
+dataset_registry: datasets.yaml  # where each dataset lives (design A's dataset/ folder) and its label format
 data_root: datasets
+merge_splits: true             # pool train/ + test/ (val/) into one set, then split it with val_split
 train_dir: null                # set this to bypass the dataset-name lookup
-val_dir: null                  # optional; if null, val_split of train is held out
+val_dir: null                  # optional; pooled too while merge_splits is true
 num_classes: null              # null = every class folder; N = use N of them
 class_selection: first         # first (alphabetical) | random (seeded) when N < total
 classes: null                  # or an explicit list, e.g. [cat, dog, horse]
 max_per_class: null            # cap images per class (null = all)
-val_split: 0.1
+val_split: 0.1                 # fraction of every class held out for validation (seeded)
 augment: basic                 # none | basic | trivial
 num_workers: 4                 # use 0 on Windows if worker startup stalls
+fast_decode: true              # decode JPEGs at >= 2x image_size (big speed-up on 2k-4k px photos)
 
 # ---------------- model ----------------
 image_size: 224

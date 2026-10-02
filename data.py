@@ -1,45 +1,53 @@
 """
-Image-folder data pipeline.
+Image data pipeline.
 
-The primary entry point is a dataset *name* under a data root:
+The entry point is a dataset *name*. It is looked up first in the dataset registry
+(`datasets.yaml`, config key `dataset_registry`), which says where each dataset lives
+and how its labels are stored:
 
-    datasets/<dataset_name>/train/<class>/*.jpg
-    datasets/<dataset_name>/test/<class>/*.jpg     # or val/ or valid/ (optional)
+    format: folder   <path>/[train|test|val]/<class>/*.jpg   or   <path>/<class>/*.jpg
+    format: csv      <path>/<csv> lists the images in <path>/<image_dir> with their labels
+                     (one-hot columns, one label column, or space-separated multi-labels,
+                     each label combination being one class)
 
-    python train.py --config config.yaml --dataset plantvillage
+    python train.py --config config.yaml --dataset plant-pathology-2021
 
-A flat folder also works -- if `datasets/<dataset_name>/` holds the class
-folders directly, `val_split` of each class is held out for validation:
+A name that is not in the registry is searched as a folder under the registry root,
+`data_root`, `datasets/` and `dataset/`. A folder that only wraps the class folders
+in a single sub-folder (e.g. `plantvillage/color/<class>/`) is descended into.
+`--train-dir` / `--val-dir` skip the name lookup.
 
-    datasets/<dataset_name>/<class>/*.jpg
-
-If the name is not found under `data_root`, the sibling roots `datasets/` and
-`dataset/` are tried too, and a folder that only wraps the class folders in a
-single sub-folder (e.g. `dataset/plantvillage/color/<class>/`) is descended into.
-
-`--train-dir` / `--val-dir` override the name-based lookup entirely.
+Every dataset is turned into one pool of labelled images per class. With
+`merge_splits` (default) the train/ and test/ (val/, valid/) folders are pooled, and
+`val_split` of each class is held out for validation (seeded, so the split is the
+same in every run and in analyze_ldga.py). With `merge_splits: false`, an existing
+test/val folder is used as the validation set instead.
 
 The training loader uses `ResumableSampler`: the shuffle order of epoch e is a
 pure function of (seed, e), so a run resumed mid-epoch skips exactly the
 batches it had already seen.
 
 Configurable:
-  * num_classes      - use only N of the class folders (None = all)
+  * num_classes      - use only N of the classes (None = all)
   * class_selection  - "first" (alphabetical) or "random" (seeded) when N < total
-  * classes          - explicit list of folder names (overrides the two above)
-  * max_per_class    - cap images per class (None = all)
-  * val_split        - fraction of train held out per class when there is no val dir
+  * classes          - explicit list of class names (overrides the two above)
+  * max_per_class    - cap images per class (None = all), applied before the split
+  * val_split        - fraction of each class held out for validation
+  * fast_decode      - decode JPEGs at a reduced scale (>= 2x image_size); large speed-up
+                       for the 2k-4k px plant-pathology / cassava photos
 """
 from __future__ import annotations
 
+import csv
+import json
 import os
 import random
 from collections import defaultdict
 
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset, Sampler
-from torchvision import datasets, transforms
-from torchvision.datasets.folder import default_loader
+from torchvision import transforms
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -73,33 +81,35 @@ def _has_images(path: str) -> bool:
     return any(f.lower().endswith(IMG_EXTS) for f in os.listdir(path))
 
 
-def _find_base(data_root: str, dataset: str) -> str:
-    if os.path.isdir(dataset):
-        return dataset
-    roots = [data_root] + [r for r in FALLBACK_ROOTS if r != data_root]
-    for root in roots:
-        cand = os.path.join(root, dataset)
-        if os.path.isdir(cand):
-            return cand
-    lines = []
-    for root in roots:
-        if os.path.isdir(root):
-            lines.append(f"  {root}/: {[d for d in _subdirs(root) if not d.startswith('_')]}")
-    raise SystemExit(f"dataset folder not found: {dataset} (looked under {roots})"
-                     + ("\navailable:\n" + "\n".join(lines) if lines else ""))
+# --------------------------------------------------------------------------- #
+# registry
+# --------------------------------------------------------------------------- #
+def load_registry(path: str | None) -> dict:
+    """{'root': str | None, 'datasets': {name: spec}}; empty when there is no file."""
+    if not path or not os.path.isfile(path):
+        if path:
+            print(f"[data] dataset registry not found: {path} (folder lookup only)")
+        return {"root": None, "datasets": {}}
+    import yaml
+    with open(path) as f:
+        reg = yaml.safe_load(f) or {}
+    root = reg.get("root")
+    if root and not os.path.isabs(root):    # relative roots are relative to the registry file
+        root = os.path.join(os.path.dirname(os.path.abspath(path)), root)
+    return {"root": root, "datasets": reg.get("datasets") or {}}
 
 
-def resolve_dataset_dirs(data_root: str, dataset: str | None,
-                         train_dir: str | None, val_dir: str | None):
-    """Turn (data_root, dataset name) into concrete train/val directories.
-    Explicit train_dir/val_dir always win."""
-    if train_dir:
-        return train_dir, val_dir
-    if not dataset:
-        raise SystemExit(
-            "give either --dataset <name> (looked up under --data-root) or --train-dir")
+# --------------------------------------------------------------------------- #
+# sample collection: everything becomes {class_name: [paths]}
+# --------------------------------------------------------------------------- #
+def _scan_class_dirs(path: str, pool: dict):
+    for c in _subdirs(path):
+        cdir = os.path.join(path, c)
+        pool[c].extend(os.path.join(cdir, f) for f in sorted(os.listdir(cdir))
+                       if f.lower().endswith(IMG_EXTS))
 
-    base = _find_base(data_root, dataset)
+
+def _unwrap(base: str) -> str:
     # unwrap single wrapper folders, e.g. plantvillage/color/<class>/*.jpg
     while True:
         subs = _subdirs(base)
@@ -109,21 +119,137 @@ def resolve_dataset_dirs(data_root: str, dataset: str | None,
             base = os.path.join(base, subs[0])
             print(f"[data] descending into single sub-folder: {base}")
         else:
-            break
+            return base
 
+
+def _collect_folder(base: str, merge_splits: bool):
+    """-> (pool, val_pool or None, description)."""
+    base = _unwrap(base)
     train = os.path.join(base, "train")
-    if not _has_class_dirs(train):
-        # flat layout: datasets/<name>/<class>/*.jpg
-        return base, val_dir
-    if val_dir is None:
-        for name in VAL_DIR_NAMES:
-            cand = os.path.join(base, name)
-            if _has_class_dirs(cand):
-                val_dir = cand
-                break
-    return train, val_dir
+    if not _has_class_dirs(train):          # flat: <base>/<class>/*.jpg
+        pool = defaultdict(list)
+        _scan_class_dirs(base, pool)
+        return pool, None, f"{base} (flat)"
+    splits = [os.path.join(base, n) for n in VAL_DIR_NAMES if _has_class_dirs(os.path.join(base, n))]
+    pool = defaultdict(list)
+    _scan_class_dirs(train, pool)
+    if merge_splits:
+        for s in splits:
+            _scan_class_dirs(s, pool)
+        names = ["train"] + [os.path.basename(s) for s in splits]
+        return pool, None, f"{base} ({' + '.join(names)} pooled)"
+    if not splits:
+        return pool, None, f"{train}"
+    val_pool = defaultdict(list)
+    _scan_class_dirs(splits[0], val_pool)
+    return pool, val_pool, f"{train} | val from {splits[0]}"
 
 
+def _collect_csv(base: str, spec: dict):
+    """CSV-labelled images -> (pool, None, description)."""
+    csv_path = os.path.join(base, spec.get("csv", "train.csv"))
+    img_dir = os.path.join(base, spec.get("image_dir", "images"))
+    img_col = spec.get("image_col", "image")
+    ext = spec.get("image_ext", "")
+    label_cols = spec.get("label_cols")
+    label_col = spec.get("label_col")
+    if not (label_cols or label_col):
+        raise SystemExit(f"registry entry for {base} needs label_cols or label_col")
+    label_map = None
+    if spec.get("label_map"):
+        with open(os.path.join(base, spec["label_map"])) as f:
+            label_map = {str(k): v for k, v in json.load(f).items()}
+
+    pool, missing, bad = defaultdict(list), 0, 0
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            if label_cols:
+                hot = [c for c in label_cols if str(row[c]).strip() in ("1", "1.0")]
+                if len(hot) != 1:
+                    bad += 1
+                    continue
+                name = hot[0]
+            else:
+                value = str(row[label_col]).strip()
+                if label_map is not None:
+                    name = label_map.get(value, value)
+                else:   # multi-label "scab frog_eye_leaf_spot" -> class "scab+frog_eye_leaf_spot"
+                    name = "+".join(value.split())
+            fname = row[img_col].strip()
+            if ext and not fname.lower().endswith(IMG_EXTS):
+                fname += ext
+            path = os.path.join(img_dir, fname)
+            if not os.path.isfile(long_path(path)):
+                missing += 1
+                continue
+            pool[name].append(path)
+    for name in pool:
+        pool[name].sort()
+    if missing:
+        print(f"[data] WARNING: {missing} images listed in {csv_path} were not found and are skipped")
+    if bad:
+        print(f"[data] WARNING: {bad} rows of {csv_path} without exactly one label are skipped")
+    return pool, None, f"{csv_path} -> {img_dir}"
+
+
+def _find_base(roots, dataset: str) -> str:
+    if os.path.isdir(dataset):
+        return dataset
+    for root in roots:
+        cand = os.path.join(root, dataset)
+        if os.path.isdir(cand):
+            return cand
+    lines = [f"  {r}/: {[d for d in _subdirs(r) if not d.startswith('_')]}"
+             for r in roots if os.path.isdir(r)]
+    raise SystemExit(f"dataset not found: {dataset} (not in the registry; looked under {roots})"
+                     + ("\navailable:\n" + "\n".join(lines) if lines else ""))
+
+
+def collect_samples(dataset: str | None, data_root: str = "datasets",
+                    registry: str | None = "datasets.yaml", train_dir: str | None = None,
+                    val_dir: str | None = None, merge_splits: bool = True):
+    """Resolve a dataset to (pool, val_pool, description).
+
+    pool / val_pool map class name -> list of image paths. val_pool is None unless
+    merge_splits is off and the dataset ships a labelled test/val split (or --val-dir)."""
+    if train_dir:
+        pool = defaultdict(list)
+        _scan_class_dirs(train_dir, pool)
+        if not val_dir:
+            return pool, None, train_dir
+        vpool = defaultdict(list)
+        _scan_class_dirs(val_dir, vpool)
+        if merge_splits:
+            for c, paths in vpool.items():
+                pool[c].extend(paths)
+            return pool, None, f"{train_dir} + {val_dir} pooled"
+        return pool, vpool, f"{train_dir} | val from {val_dir}"
+    if not dataset:
+        raise SystemExit("give either --dataset <name> or --train-dir")
+
+    reg = load_registry(registry)
+    spec = reg["datasets"].get(dataset)
+    if spec is not None:
+        base = spec.get("path", dataset)
+        if not os.path.isabs(base) and reg["root"]:
+            base = os.path.join(reg["root"], base)
+        if not os.path.isdir(base):
+            raise SystemExit(f"registry entry '{dataset}' points to a missing folder: {base}")
+        fmt = spec.get("format", "folder")
+        if fmt == "csv":
+            return _collect_csv(base, spec)
+        if fmt == "folder":
+            return _collect_folder(base, merge_splits)
+        raise SystemExit(f"registry entry '{dataset}': unknown format {fmt!r} (folder | csv)")
+
+    roots = [r for r in [reg["root"], data_root] if r]
+    roots += [r for r in FALLBACK_ROOTS if r not in roots]
+    return _collect_folder(_find_base(roots, dataset), merge_splits)
+
+
+# --------------------------------------------------------------------------- #
+# datasets / loaders
+# --------------------------------------------------------------------------- #
 class ResumableSampler(Sampler):
     """Random permutation that depends only on (seed, epoch), with an optional
     start offset so an interrupted epoch can be resumed exactly."""
@@ -142,18 +268,29 @@ class ResumableSampler(Sampler):
         return self.n - self.start
 
 
+def load_image(path: str, draft: int | None = None) -> Image.Image:
+    """PIL RGB image. With `draft`, JPEGs are decoded at the largest 1/2^k scale
+    that keeps both sides >= draft (much faster for multi-megapixel photos)."""
+    with open(long_path(path), "rb") as f:
+        img = Image.open(f)
+        if draft:
+            img.draft("RGB", (draft, draft))
+        return img.convert("RGB")
+
+
 class SampleListDataset(Dataset):
-    def __init__(self, samples, classes, transform=None):
+    def __init__(self, samples, classes, transform=None, draft: int | None = None):
         self.samples = samples          # list of (path, label)
         self.classes = classes
         self.transform = transform
+        self.draft = draft
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, i):
         path, label = self.samples[i]
-        img = default_loader(long_path(path))      # PIL RGB
+        img = load_image(path, self.draft)
         if self.transform is not None:
             img = self.transform(img)
         return img, label
@@ -178,11 +315,11 @@ def _select_classes(all_classes, num_classes, class_selection, classes, seed):
     if classes:
         missing = [c for c in classes if c not in all_classes]
         if missing:
-            raise ValueError(f"Classes not found in train folder: {missing}")
+            raise ValueError(f"Classes not found in the dataset: {missing}")
         return list(classes)
     if num_classes is None or num_classes >= len(all_classes):
         if num_classes is not None and num_classes > len(all_classes):
-            print(f"[data] asked for {num_classes} classes, folder has "
+            print(f"[data] asked for {num_classes} classes, dataset has "
                   f"{len(all_classes)} - using all.")
         return list(all_classes)
     if class_selection == "random":
@@ -190,56 +327,45 @@ def _select_classes(all_classes, num_classes, class_selection, classes, seed):
     return list(all_classes)[:num_classes]
 
 
-def _group(samples, idx_to_name, keep, max_per_class, rng):
-    by_class = defaultdict(list)
-    for path, idx in samples:
-        name = idx_to_name[idx]
-        if name in keep:
-            by_class[name].append(path)
-    for name in by_class:
-        rng.shuffle(by_class[name])
-        if max_per_class:
-            by_class[name] = by_class[name][:max_per_class]
-    return by_class
-
-
-def build_dataloaders(train_dir, val_dir=None, image_size=224, batch_size=64,
+def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
                       num_workers=4, num_classes=None, class_selection="first",
                       classes=None, max_per_class=None, val_split=0.1,
-                      augment="basic", seed=42, pin_memory=True):
+                      augment="basic", seed=42, pin_memory=True, fast_decode=True):
+    """pool / val_pool: {class name: [paths]} from `collect_samples`."""
     rng = random.Random(seed)
     train_tf, eval_tf = build_transforms(image_size, augment)
+    draft = 2 * image_size if fast_decode else None
 
-    base = datasets.ImageFolder(train_dir)
-    chosen = _select_classes(base.classes, num_classes, class_selection, classes, seed)
+    all_classes = sorted(c for c, paths in pool.items() if paths)
+    chosen = _select_classes(all_classes, num_classes, class_selection, classes, seed)
     name_to_label = {c: i for i, c in enumerate(chosen)}
-    idx_to_name = {i: c for c, i in base.class_to_idx.items()}
 
-    train_by_class = _group(base.samples, idx_to_name, set(chosen), max_per_class, rng)
-    empty = [c for c in chosen if not train_by_class.get(c)]
+    by_class = {}
+    for c in chosen:
+        paths = sorted(pool.get(c, []))
+        rng.shuffle(paths)
+        by_class[c] = paths[:max_per_class] if max_per_class else paths
+    empty = [c for c in chosen if not by_class[c]]
     if empty:
         raise ValueError(f"No images found for classes: {empty}")
 
     train_samples, val_samples = [], []
-    if val_dir:
-        vbase = datasets.ImageFolder(val_dir)
-        vidx_to_name = {i: c for c, i in vbase.class_to_idx.items()}
-        val_by_class = _group(vbase.samples, vidx_to_name, set(chosen), None, rng)
+    if val_pool:
         for c in chosen:
-            train_samples += [(p, name_to_label[c]) for p in train_by_class[c]]
-            val_samples += [(p, name_to_label[c]) for p in val_by_class.get(c, [])]
+            train_samples += [(p, name_to_label[c]) for p in by_class[c]]
+            val_samples += [(p, name_to_label[c]) for p in sorted(val_pool.get(c, []))]
     else:
         # stratified hold-out: at least one val image per class when possible
         for c in chosen:
-            paths = train_by_class[c]
+            paths = by_class[c]
             n_val = int(round(len(paths) * val_split)) if val_split > 0 else 0
             if val_split > 0 and len(paths) > 1:
                 n_val = max(1, n_val)
             val_samples += [(p, name_to_label[c]) for p in paths[:n_val]]
             train_samples += [(p, name_to_label[c]) for p in paths[n_val:]]
 
-    train_ds = SampleListDataset(train_samples, chosen, train_tf)
-    val_ds = SampleListDataset(val_samples, chosen, eval_tf) if val_samples else None
+    train_ds = SampleListDataset(train_samples, chosen, train_tf, draft)
+    val_ds = SampleListDataset(val_samples, chosen, eval_tf, draft) if val_samples else None
 
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               sampler=ResumableSampler(len(train_ds), seed),
@@ -251,12 +377,14 @@ def build_dataloaders(train_dir, val_dir=None, image_size=224, batch_size=64,
                              persistent_workers=num_workers > 0)
                   if val_ds else None)
 
-    counts = defaultdict(int)
+    tr_counts, va_counts = defaultdict(int), defaultdict(int)
     for _, y in train_samples:
-        counts[y] += 1
-    print(f"[data] {len(base.classes)} class folders in {train_dir}; using {len(chosen)}")
+        tr_counts[y] += 1
+    for _, y in val_samples:
+        va_counts[y] += 1
+    print(f"[data] {len(all_classes)} classes in the dataset; using {len(chosen)}")
     print(f"[data] train images: {len(train_ds)} | val images: {len(val_samples)}"
-          f" ({'from ' + val_dir if val_dir else f'{val_split:.0%} split of train'})")
-    preview = ", ".join(f"{c}={counts[i]}" for i, c in enumerate(chosen[:10]))
-    print(f"[data] per-class train counts: {preview}{' ...' if len(chosen) > 10 else ''}")
+          f" ({'given val split' if val_pool else f'{val_split:.0%} stratified split, seed {seed}'})")
+    preview = ", ".join(f"{c}={tr_counts[i]}/{va_counts[i]}" for i, c in enumerate(chosen[:12]))
+    print(f"[data] per-class train/val: {preview}{' ...' if len(chosen) > 12 else ''}")
     return train_loader, val_loader, chosen

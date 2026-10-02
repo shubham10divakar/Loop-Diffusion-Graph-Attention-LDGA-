@@ -6,6 +6,9 @@ python train.py --config config.yaml --summary-only --num-classes 38
 python train.py --config config.yaml --summary-only --num-classes 38 --variant loopvit --dim 408
 
 # ---- LDGA-gpr per_step (new variant) on each dataset ----
+python train.py --config config.yaml --dataset plant-pathology-2020
+python train.py --config config.yaml --dataset plant-pathology-2021 --save-every-steps 500
+python train.py --config config.yaml --dataset cassava --save-every-steps 500
 python train.py --config config.yaml --dataset plantodc
 python train.py --config config.yaml --dataset plantvillage
 python train.py --config config.yaml --dataset cub200
@@ -36,3 +39,17 @@ python train.py --config config.yaml --dataset plantvillage --variant ldga      
 python train.py --config config.yaml --dataset plantvillage --variant ldga-gpr-shared --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-gpr-shared_plantvillage
 python train.py --config config.yaml --dataset plantvillage --variant ldga-ppr        --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-ppr_plantvillage
 python train.py --config config.yaml --dataset plantvillage --variant ldga-heat       --epochs 100 --batch-size 16 --save-every 1 --keep-checkpoints 0 --early-stopping true --monitor val_loss --patience 10 --resume auto --output-dir runs/ldga-heat_plantvillage
+
+# ---- plant pathology: main comparison (every variant, same pooled 90/10 split) ----
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plant-pathology-2020
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-ppr
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-heat
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant loopvit
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plant-pathology-2021
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-ppr
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-heat

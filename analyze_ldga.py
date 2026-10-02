@@ -256,7 +256,7 @@ def main():
     p.add_argument("--device", default="auto")
     args = p.parse_args()
 
-    from data import build_dataloaders, resolve_dataset_dirs
+    from data import build_dataloaders, collect_samples
     plt = _plt()
     device = (torch.device("cuda" if torch.cuda.is_available() else "cpu")
               if args.device == "auto" else torch.device(args.device))
@@ -274,14 +274,16 @@ def main():
 
     # ---- data (rebuilt from the first checkpoint's training args) ----------
     targs = models[0][1].get("args") or {}
-    tr_dir, va_dir = resolve_dataset_dirs(
-        args.data_root or targs.get("data_root", "datasets"), args.dataset or targs.get("dataset"),
-        args.train_dir or targs.get("train_dir"), args.val_dir or targs.get("val_dir"))
+    pool, val_pool, _ = collect_samples(
+        args.dataset or targs.get("dataset"), args.data_root or targs.get("data_root", "datasets"),
+        targs.get("dataset_registry", "datasets.yaml"), args.train_dir or targs.get("train_dir"),
+        args.val_dir or targs.get("val_dir"), targs.get("merge_splits", True))
     img_size = models[0][0].cfg.image_size
     train_loader, val_loader, names = build_dataloaders(
-        tr_dir, va_dir, img_size, args.batch_size, args.num_workers,
+        pool, val_pool, img_size, args.batch_size, args.num_workers,
         None, "first", classes, targs.get("max_per_class"), targs.get("val_split", 0.1),
-        "none", targs.get("seed", 42), pin_memory=False)
+        "none", targs.get("seed", 42), pin_memory=False,
+        fast_decode=targs.get("fast_decode", True))
     if args.split == "val":
         if val_loader is None:
             raise SystemExit("no validation split available; use --split train")
@@ -289,7 +291,8 @@ def main():
     else:   # deterministic, un-augmented view of the train split
         from data import SampleListDataset, build_transforms
         loader = torch.utils.data.DataLoader(SampleListDataset(
-            train_loader.dataset.samples, names, build_transforms(img_size)[1]),
+            train_loader.dataset.samples, names, build_transforms(img_size)[1],
+            train_loader.dataset.draft),
             batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     # fixed images for CLS maps / spectra: the first --num-maps of the split

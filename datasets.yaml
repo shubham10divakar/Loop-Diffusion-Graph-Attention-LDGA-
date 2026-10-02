@@ -1,0 +1,59 @@
+# Dataset registry: where each dataset lives and how its labels are stored.
+# Used by data.py (config key `dataset_registry`). Select one with --dataset <name>.
+#
+# Every dataset becomes ONE pool of labelled images, which is then split per class
+# into train / val with `val_split` (seeded, stratified). With merge_splits: true
+# (config.yaml) the train/ and test/ (val/, valid/) folders of a folder dataset are
+# pooled before that split.
+#
+# format: folder  -> <path>/[train|test|val]/<class>/*.jpg, or <path>/<class>/*.jpg
+# format: csv     -> <path>/<csv> lists the images in <path>/<image_dir>:
+#     label_cols: [a, b, ...]   one-hot columns, the class is the column holding 1
+#     label_col: name           one label column; a space-separated multi-label value
+#                               ("scab frog_eye_leaf_spot") becomes the class "scab+frog_eye_leaf_spot"
+#     label_map: file.json      optional {"0": "name", ...} for integer labels
+#     image_ext: .jpg           appended when the CSV ids have no extension
+#
+# Kaggle test sets (plant-pathology-*/test*, cassava test_images) have no labels,
+# so only the labelled train CSV is used.
+
+root: "D:/D/my docs/my docs/ideas/attention based works/Loop Transformers/Topoly axis innovation ideas for loop vits/design A loop carried graph attention/code repo/dataset"
+
+datasets:
+  plant-pathology-2020:          # FGVC7: 1821 images, 4 classes (healthy, multiple_diseases, rust, scab)
+    path: plant-pathology-2020-fgvc7
+    format: csv
+    csv: train.csv
+    image_dir: images
+    image_col: image_id
+    image_ext: .jpg
+    label_cols: [healthy, multiple_diseases, rust, scab]
+
+  plant-pathology-2021:          # FGVC8: 18632 images, 12 classes (6 single diseases + 6 combinations)
+    path: plant-pathology-2021-fgvc8
+    format: csv
+    csv: train.csv
+    image_dir: train_images
+    image_col: image
+    label_col: labels
+
+  cassava:                       # 21397 images, 5 classes
+    path: cassava-leaf-disease-classification
+    format: csv
+    csv: train.csv
+    image_dir: train_images
+    image_col: image_id
+    label_col: label
+    label_map: label_num_to_disease_map.json
+
+  plantdoc:                      # 27 classes, train/ + test/ pooled
+    path: plantodc
+    format: folder
+
+  plantodc:                      # alias (the folder's own spelling)
+    path: plantodc
+    format: folder
+
+  plantvillage:                  # 38 classes, flat
+    path: plantvillage/color
+    format: folder
