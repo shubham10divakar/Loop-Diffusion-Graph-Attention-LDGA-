@@ -57,6 +57,7 @@ weight-tied ViT** instead of a fixed input graph.
 | `loop_vit.py` | the model: `LoopViT` + `LoopViTConfig` with the LDGA filters, loop relaxation, fixed-point exit, batch-compacting `dynamic_forward` and analytic FLOP count |
 | `ldga_stats.py` | diagnostics shared by model, training and analysis: frequency response, attention spectrum, Dirichlet energy, effective rank, relative state change |
 | `train.py` | training: YAML + CLI, variants, early stopping, checkpoint every epoch, resume (also mid-epoch), per-epoch LDGA logging |
+| `describe_dataset.py` | dataset description: images per class (train / val split), imbalance, image sizes, colour modes, disk size, pixel mean / std, sample grid, optional corrupt-file and duplicate / leakage checks, overview table (CSV / Markdown / LaTeX) |
 | `evaluate.py` | paper metrics for any saved checkpoint (accuracy, balanced acc, precision / recall / specificity / F1, MCC, kappa, AUROC, AUPRC, log loss, Brier, ECE, bootstrap 95 % CIs), confusion matrix, ROC / PR / reliability plots, comparison tables (CSV / Markdown / LaTeX), training curves |
 | `analyze_ldga.py` | analysis figures + JSON (frequency responses, θ heatmaps, oversmoothing, spectra, extrapolation, exit Pareto, CLS maps, η) |
 | `predict.py` | run a checkpoint on images, with loop-count override, dynamic exit and per-step state change |
@@ -144,8 +145,49 @@ sets (plant-pathology, cassava) have no labels, so only their train CSV is used.
   9 of them in validation), so look at per-class results, not only overall accuracy.
 * **Image size:** the images are large (FGVC7 2048×1365, FGVC8 up to 4000×2672), so keep
   `fast_decode: true`. If the GPU is still waiting on data, raise `--num-workers`.
+* **Duplicates with conflicting labels** (found with `describe_dataset.py --duplicates`):
+  * FGVC7: 1 image appears twice, labelled `multiple_diseases` and `scab`.
+  * FGVC8: 27 images appear twice with different labels (e.g. `complex` vs `rust`), and 3 of
+    those pairs fall on both sides of the train / val split.
+  * These come from the original Kaggle data and are kept as they are. Mention them in the
+    paper. `dataset_stats/<name>/problems.csv` lists every file involved.
 
-### 4.2 Lookup rules
+### 4.2 Describing a dataset (images per class and more)
+
+```bash
+python describe_dataset.py --dataset plant-pathology-2021
+python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021 --verify --duplicates
+python describe_dataset.py --all                  # every dataset in datasets.yaml + overview table
+```
+
+The split is computed exactly as in training: `val_split`, `seed`, `merge_splits` and
+`max_per_class` are read from `config.yaml`, and the same flags override them. Results go to
+`dataset_stats/<name>/`:
+
+| file | content |
+|---|---|
+| `report.txt` | source, split, classes, images (train / val), smallest / median / largest class, imbalance ratio and normalised entropy, width / height / aspect ratio, most common sizes, colour modes, file formats, file size and total disk size, unreadable files, RGB pixel mean / std (`--pixel-stats N` images; ImageNet values shown for comparison), and the per-class table |
+| `class_distribution.csv` / `.png` | per class: total, train, val, share of the dataset (stacked bars) |
+| `image_sizes.png` | width, height, aspect-ratio and file-size histograms |
+| `sample_grid.png` | `--samples-per-class` (default 4) images of every class |
+| `summary.json` | every number |
+| `problems.csv` | unreadable files, corrupt files (`--verify`, decodes every image) and duplicates (`--duplicates`, hashes every file): duplicates labelled with different classes and duplicates that leak across train / val are flagged |
+| `../datasets_summary.csv` / `.md` / `.tex` | one row per dataset (with several datasets or `--all`) |
+
+`train.py` also writes `class_distribution.csv` / `.png` of the actual split to every run
+folder and prints the per-class table at start-up.
+
+Overview, with the default 90 / 10 split and seed 42:
+
+| Dataset | Classes | Images | Train | Val | Min/class | Max/class | Imbalance | Median size | Size (GB) |
+|---|---|---|---|---|---|---|---|---|---|
+| plant-pathology-2020 | 4 | 1821 | 1639 | 182 | 91 | 622 | 6.8x | 2048x1365 | 0.374 |
+| plant-pathology-2021 | 12 | 18632 | 16769 | 1863 | 87 | 4826 | 55.5x | 4000x2672 | 14.989 |
+| cassava | 5 | 21397 | 19256 | 2141 | 1087 | 13158 | 12.1x | 800x600 | 2.384 |
+| plantdoc | 27 | 2920 | 2627 | 293 | 42 | 238 | 5.7x | 640x560 | 0.886 |
+| plantvillage | 38 | 54305 | 48875 | 5430 | 152 | 5507 | 36.2x | 256x256 | 0.792 |
+
+### 4.3 Lookup rules
 
 * To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
   file header documents the keys).
@@ -413,7 +455,8 @@ epoch  12/100 | lr 4.31e-04 | train loss 1.8123 acc 0.4712 | 212 img/s, 5.84 GB
   signal: does the model learn high-pass components?). `alpha` / `tau` for ppr / heat,
   `eta/step` with `--loop-relax`.
 
-Files in `runs/<name>/`: `training_curves.png` (loss, accuracy, LR, accuracy per loop step,
+Files in `runs/<name>/`: `class_distribution.csv` / `.png` (images per class in this run's
+train / val split), `training_curves.png` (loss, accuracy, LR, accuracy per loop step,
 θ sign, epoch time; redrawn every epoch, with the best epoch marked), `eval/` (final
 evaluation, §5.10), `log.csv`, `metrics.jsonl` (full per-epoch record including raw θ,
 α/τ and η), `theta_heatmap.png` and `freq_response.png` (latest epoch), `config.json`

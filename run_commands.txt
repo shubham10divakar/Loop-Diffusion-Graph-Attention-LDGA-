@@ -63,3 +63,8 @@ python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --epochs 10 20 30
 python evaluate.py --ckpt runs/ldga_plant-pathology-2021 --loop-steps 6 --dynamic-exit
 python evaluate.py --curves runs/ldga_plant-pathology-2021
 python evaluate.py --ckpt runs/loopvit_plant-pathology-2021 runs/loopvit-cm_plant-pathology-2021 runs/ldga-ppr_plant-pathology-2021 runs/ldga-heat_plant-pathology-2021 runs/ldga-gpr-shared_plant-pathology-2021 runs/ldga_plant-pathology-2021 --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/plant-pathology-2021
+
+# ---- dataset description: images per class, split, sizes, pixel stats, duplicates ----
+python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021
+python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021 --verify --duplicates
+python describe_dataset.py --all

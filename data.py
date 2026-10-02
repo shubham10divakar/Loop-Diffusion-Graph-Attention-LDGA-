@@ -327,15 +327,12 @@ def _select_classes(all_classes, num_classes, class_selection, classes, seed):
     return list(all_classes)[:num_classes]
 
 
-def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
-                      num_workers=4, num_classes=None, class_selection="first",
-                      classes=None, max_per_class=None, val_split=0.1,
-                      augment="basic", seed=42, pin_memory=True, fast_decode=True):
-    """pool / val_pool: {class name: [paths]} from `collect_samples`."""
+def split_samples(pool, val_pool=None, num_classes=None, class_selection="first", classes=None,
+                  max_per_class=None, val_split=0.1, seed=42):
+    """The train / val split used for training: class selection, per-class cap and the
+    seeded stratified hold-out (or the given val_pool).
+    -> (train_samples, val_samples, chosen class names, all class names)"""
     rng = random.Random(seed)
-    train_tf, eval_tf = build_transforms(image_size, augment)
-    draft = 2 * image_size if fast_decode else None
-
     all_classes = sorted(c for c, paths in pool.items() if paths)
     chosen = _select_classes(all_classes, num_classes, class_selection, classes, seed)
     name_to_label = {c: i for i, c in enumerate(chosen)}
@@ -363,6 +360,18 @@ def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
                 n_val = max(1, n_val)
             val_samples += [(p, name_to_label[c]) for p in paths[:n_val]]
             train_samples += [(p, name_to_label[c]) for p in paths[n_val:]]
+    return train_samples, val_samples, chosen, all_classes
+
+
+def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
+                      num_workers=4, num_classes=None, class_selection="first",
+                      classes=None, max_per_class=None, val_split=0.1,
+                      augment="basic", seed=42, pin_memory=True, fast_decode=True):
+    """pool / val_pool: {class name: [paths]} from `collect_samples`."""
+    train_tf, eval_tf = build_transforms(image_size, augment)
+    draft = 2 * image_size if fast_decode else None
+    train_samples, val_samples, chosen, all_classes = split_samples(
+        pool, val_pool, num_classes, class_selection, classes, max_per_class, val_split, seed)
 
     train_ds = SampleListDataset(train_samples, chosen, train_tf, draft)
     val_ds = SampleListDataset(val_samples, chosen, eval_tf, draft) if val_samples else None

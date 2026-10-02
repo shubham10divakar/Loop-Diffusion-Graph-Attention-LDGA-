@@ -419,6 +419,18 @@ def truncate_logs(out_dir: str, last_epoch: int):
             f.writelines(lines)
 
 
+def save_class_distribution(args, train_loader, val_loader, class_names):
+    """Images per class in the actual train / val split -> class_distribution.csv / .png."""
+    try:
+        from describe_dataset import class_distribution, distribution_table, write_class_distribution
+        rows = class_distribution(train_loader.dataset.samples,
+                                  val_loader.dataset.samples if val_loader else [], class_names)
+        write_class_distribution(rows, args.output_dir, args.dataset or "")
+        print("[data] images per class:\n" + distribution_table(rows))
+    except Exception as ex:
+        print(f"[warn] class distribution not written: {ex}")
+
+
 def save_training_curves(out_dir: str):
     try:
         from evaluate import plot_training_curves
@@ -518,6 +530,7 @@ def main():
     ckpt_dir = os.path.join(args.output_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     print(f"[run] output dir: {args.output_dir}")
+    save_class_distribution(args, train_loader, val_loader, class_names)
 
     # ---- optimisation -------------------------------------------------------
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
