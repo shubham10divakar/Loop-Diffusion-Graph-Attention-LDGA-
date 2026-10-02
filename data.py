@@ -9,6 +9,9 @@ and how its labels are stored:
     format: csv      <path>/<csv> lists the images in <path>/<image_dir> with their labels
                      (one-hot columns, one label column, or space-separated multi-labels,
                      each label combination being one class)
+    format: fiftyone <path>/samples.json of a FiftyOne dataset export (e.g. PlantWild):
+                     label = sample[label_field].label, optional `filter` on sample fields,
+                     official split in `split_field`
 
     python train.py --config config.yaml --dataset plant-pathology-2021
 
@@ -195,6 +198,46 @@ def _collect_csv(base: str, spec: dict):
     return pool, None, f"{csv_path} -> {img_dir}"
 
 
+def _collect_fiftyone(base: str, spec: dict, merge_splits: bool):
+    """FiftyOne dataset export (samples.json) -> (pool, val_pool or None, description).
+
+    spec keys: samples (default samples.json), label_field (default ground_truth),
+    filter ({field: value} that every used sample must match, e.g. dataset_version: v1),
+    split_field (default split), val_splits (official splits used as validation when
+    merge_splits is false; default [test])."""
+    path = os.path.join(base, spec.get("samples", "samples.json"))
+    with open(path, encoding="utf-8") as f:
+        samples = json.load(f)["samples"]
+    label_field = spec.get("label_field", "ground_truth")
+    flt = spec.get("filter") or {}
+    split_field = spec.get("split_field", "split")
+    val_splits = set(spec.get("val_splits", ["test"]))
+    pool, val_pool, missing, used = defaultdict(list), defaultdict(list), 0, 0
+    for s in samples:
+        if any(s.get(k) != v for k, v in flt.items()):
+            continue
+        lab = s.get(label_field)
+        name = lab.get("label") if isinstance(lab, dict) else lab
+        if not name:
+            continue
+        p = os.path.join(base, s["filepath"]) if not os.path.isabs(s["filepath"]) else s["filepath"]
+        if not os.path.isfile(long_path(p)):
+            missing += 1
+            continue
+        used += 1
+        target = val_pool if (not merge_splits and s.get(split_field) in val_splits) else pool
+        target[name].append(p)
+    for d in (pool, val_pool):
+        for name in d:
+            d[name].sort()
+    if missing:
+        print(f"[data] WARNING: {missing} images listed in {path} were not found and are skipped")
+    what = f"{path} ({used} samples" + (f", filter {flt}" if flt else "") + ")"
+    if merge_splits or not val_pool:
+        return pool, None, what + (", official splits pooled" if merge_splits else "")
+    return pool, val_pool, what + f", val = official {sorted(val_splits)} split"
+
+
 def _find_base(roots, dataset: str) -> str:
     if os.path.isdir(dataset):
         return dataset
@@ -243,7 +286,9 @@ def collect_samples(dataset: str | None, data_root: str = "datasets",
             return _collect_csv(base, spec)
         if fmt == "folder":
             return _collect_folder(base, merge_splits)
-        raise SystemExit(f"registry entry '{dataset}': unknown format {fmt!r} (folder | csv)")
+        if fmt == "fiftyone":
+            return _collect_fiftyone(base, spec, merge_splits)
+        raise SystemExit(f"registry entry '{dataset}': unknown format {fmt!r} (folder | csv | fiftyone)")
 
     roots = [r for r in [reg["root"], data_root] if r]
     roots += [r for r in FALLBACK_ROOTS if r not in roots]

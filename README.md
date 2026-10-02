@@ -122,6 +122,8 @@ Where each one lives and how it is labelled is set in **`datasets.yaml`** (confi
 | `plantvillage` | `color/<class>/` folders | 38 | 54 305 |
 | `rice-leaf-bd` | RiceLeafDiseaseBD `Original images/<class>/` (§4.2) | 6 | 9 769 |
 | `paddy` | Paddy Doctor (Kaggle) `train_images/<class>/` (§4.2) | 10 | 10 407 |
+| `plantwild` | PlantWild v1 (ACM MM 2024), FiftyOne `samples.json` (§4.3) | 89 | 18 542 |
+| `plantwild-v2` | PlantWild v2, FiftyOne `samples.json` (§4.3) | 115 | 11 488 |
 
 **One protocol for every dataset:** all labelled images go into one pool, and `--val-split`
 (default 10 %) of each class is held out for validation. The split is stratified and seeded,
@@ -227,7 +229,44 @@ python train.py --config config.yaml --dataset paddy
 python train.py --config config.yaml --dataset paddy --smote true
 ```
 
-### 4.3 Describing a dataset (images per class and more)
+### 4.3 PlantWild (`plantwild`, `plantwild-v2`)
+
+Location: `D:/D/my docs/my docs/ideas/attention based works/Datasets/PlantWild/`.
+Full notes are in `DATASET_INFO.md` in that folder.
+
+* **Source:** paper: Wei et al., *Benchmarking In-the-Wild Multimodal Plant Disease
+  Recognition and A Versatile Baseline*, ACM MM 2024 (arXiv:2408.03120). License: CC BY-NC-ND 4.0.
+* **Format:** the FiftyOne export of the Hugging Face dataset. The images in
+  `data/data_*/` have no class folders, and the labels are in `samples.json`
+  (`ground_truth.label`). `datasets.yaml` reads it with `format: fiftyone`, so FiftyOne
+  itself is not needed.
+* **Two versions with different taxonomies,** registered separately and never mixed:
+  * **`plantwild` (v1, the paper version, use this):** 18,542 images, 89 classes (56
+    diseases + 33 healthy "<plant> leaf"). Official split: 13,045 train / 1,820 val /
+    3,677 test.
+  * **`plantwild-v2`:** 11,488 images, 115 disease-only classes, no official split.
+* **Split:**
+  * The default (`merge_splits: true`) pools the official splits and holds out 10 %:
+    16,681 / 1,861.
+  * **`--merge-splits false`** gives the paper's setting: train + val (14,865) for training
+    and the official test set (3,677) for validation. Use it to compare with published
+    numbers.
+* **Images:** in-the-wild web photos, 36 px to 6943 px (median 645 × 514), 8,653
+  distinct sizes. A few are PNG / GIF / CMYK / RGBA; all are converted to RGB on load.
+  2.56 GB for v1.
+* **Imbalance:** 13.4× in v1 (celery anthracnose 44, basil leaf 589); 55.7× in v2.
+* **Quality:** 0 corrupt files. **Label noise:** in v1, 279 duplicate groups (590 images,
+  3.2 %) carry different labels, because the same web photo was retrieved for similar
+  classes (cabbage / cauliflower alternaria, potato / tomato early blight, cucumber / squash
+  powdery mildew, ...); 65 groups straddle train / val. v2 has 123 such groups. They are
+  kept as is; the lists are in `dataset_stats/plantwild*/problems.csv`.
+
+```bash
+python train.py --config config.yaml --dataset plantwild
+python train.py --config config.yaml --dataset plantwild --merge-splits false     # paper's official split
+```
+
+### 4.4 Describing a dataset (images per class and more)
 
 ```bash
 python describe_dataset.py --dataset plant-pathology-2021
@@ -263,8 +302,10 @@ Overview, with the default 90 / 10 split and seed 42:
 | plantvillage | 38 | 54305 | 48875 | 5430 | 152 | 5507 | 36.2x | 256x256 | 0.792 |
 | rice-leaf-bd | 6 | 9769 | 8792 | 977 | 724 | 2244 | 3.1x | 1024x1024 | 3.086 |
 | paddy | 10 | 10407 | 9367 | 1040 | 337 | 1764 | 5.2x | 480x640 | 0.763 |
+| plantwild | 89 | 18542 | 16681 | 1861 | 44 | 589 | 13.4x | 645x514 | 2.558 |
+| plantwild-v2 | 115 | 11488 | 10337 | 1151 | 7 | 390 | 55.7x | 667x534 | 1.544 |
 
-### 4.4 SMOTE for imbalanced classes (optional, `--smote true`)
+### 4.5 SMOTE for imbalanced classes (optional, `--smote true`)
 
 SMOTE (Chawla et al., 2002) adapted to images, the same method as design A. For every
 train class smaller than the target, synthetic images are added. Each one blends a real
@@ -299,10 +340,10 @@ python train.py --config config.yaml --dataset plant-pathology-2020 --smote true
     longer. `--smote-target median` adds only 5,177.
   * The neighbour search takes about 20 s on plant-pathology-2021.
 
-### 4.5 Lookup rules
+### 4.6 Lookup rules
 
-* To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
-  file header documents the keys).
+* To add a dataset, add an entry to `datasets.yaml` (`format: folder`, `csv` or `fiftyone`;
+  the file header documents the keys).
 * A name that is not in the registry is searched as a folder under the registry root,
   `--data-root`, `datasets/` and `dataset/`.
 * A folder that only wraps the class folders in one sub-folder, such as
@@ -669,14 +710,14 @@ not "topology".
   * the dataset registry (`datasets.yaml`) with the pooled 90 / 10 split
   * the evaluation pipeline (`evaluate.py`, final evaluation at the end of training)
   * the dataset description (`describe_dataset.py`)
-  * optional SMOTE for minority classes (`--smote true`, §4.4)
+  * optional SMOTE for minority classes (`--smote true`, §4.5)
   * smoke runs of every variant, resume, predict, analyze and evaluate, including on
     `plant-pathology-2020` / `-2021`
 * **Data findings:**
   * plant-pathology-2021 is heavily imbalanced (55.5x), so report macro F1, MCC and balanced
     accuracy alongside accuracy
-  * both plant-pathology sets and RiceLeafDiseaseBD contain duplicate images with
-    conflicting labels (§4.1, §4.2); they are kept as is
+  * both plant-pathology sets, RiceLeafDiseaseBD and PlantWild contain duplicate images
+    with conflicting labels (§4.1–4.3; PlantWild v1 3.2 % of images); they are kept as is
 * **Next:** full training runs, starting with plant pathology (§5.0, §5.12). H1–H4 are untested.
 * **Open decision:** whether to drop the conflicting duplicates before splitting. Decide
   before the real runs, because it changes the split.

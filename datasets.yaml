@@ -7,6 +7,9 @@
 # pooled before that split.
 #
 # format: folder  -> <path>/[train|test|val]/<class>/*.jpg, or <path>/<class>/*.jpg
+# format: fiftyone -> <path>/samples.json of a FiftyOne export; label = <label_field>.label,
+#     filter: {field: value} keeps matching samples only, split_field / val_splits give the
+#     official split used as validation when merge_splits is false
 # format: csv     -> <path>/<csv> lists the images in <path>/<image_dir>:
 #     label_cols: [a, b, ...]   one-hot columns, the class is the column holding 1
 #     label_col: name           one label column; a space-separated multi-label value
@@ -70,3 +73,19 @@ datasets:
     # train.csv repeats the labels and adds rice variety and plant age (not used for training).
     path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/paddy-disease-classification/train_images"
     format: folder
+
+  plantwild:                     # PlantWild v1 (ACM MM 2024 paper version): 18542 images, 89 classes, in the wild
+    # FiftyOne export of the Hugging Face dataset; see DATASET_INFO.md in that folder.
+    # v1 only: v2 is a different taxonomy (115 disease-only classes) and must not be mixed in.
+    path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/PlantWild"
+    format: fiftyone
+    filter: {dataset_version: v1}
+    label_field: ground_truth
+    split_field: split           # official 70/10/20 train/val/test (pooled while merge_splits is true)
+    val_splits: [test]
+
+  plantwild-v2:                  # PlantWild v2 (expert-refined): 11488 images, 115 disease-only classes, no official split
+    path: "D:/D/my docs/my docs/ideas/attention based works/Datasets/PlantWild"
+    format: fiftyone
+    filter: {dataset_version: v2}
+    label_field: ground_truth

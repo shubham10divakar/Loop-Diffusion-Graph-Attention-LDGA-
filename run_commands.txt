@@ -95,3 +95,15 @@ python train.py --config config.yaml --dataset paddy --variant ldga-gpr-shared
 python train.py --config config.yaml --dataset paddy --variant ldga-ppr
 python train.py --config config.yaml --dataset paddy --variant ldga-heat
 python evaluate.py --ckpt runs/loopvit_paddy runs/loopvit-cm_paddy runs/ldga-ppr_paddy runs/ldga-heat_paddy runs/ldga-gpr-shared_paddy runs/ldga_paddy --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/paddy
+
+# ---- PlantWild v1 (plantwild: 89 classes, 18542 in-the-wild images; v2 = plantwild-v2) ----
+python describe_dataset.py --dataset plantwild plantwild-v2 --verify --duplicates
+python train.py --config config.yaml --dataset plantwild --variant loopvit
+python train.py --config config.yaml --dataset plantwild --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plantwild
+python train.py --config config.yaml --dataset plantwild --variant ldga
+python train.py --config config.yaml --dataset plantwild --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset plantwild --variant ldga-ppr
+python train.py --config config.yaml --dataset plantwild --variant ldga-heat
+python evaluate.py --ckpt runs/loopvit_plantwild runs/loopvit-cm_plantwild runs/ldga-ppr_plantwild runs/ldga-heat_plantwild runs/ldga-gpr-shared_plantwild runs/ldga_plantwild --labels LoopViT LoopViT-cm LDGA-ppr LDGA-heat LDGA-gpr-shared LDGA-gpr --summary-dir evaluation/plantwild
+# paper's official split (train+val -> train, test -> validation), comparable with published numbers
+python train.py --config config.yaml --dataset plantwild --merge-splits false --output-dir runs/ldga_plantwild_official

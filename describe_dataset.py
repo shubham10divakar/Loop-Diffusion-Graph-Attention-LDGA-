@@ -269,7 +269,7 @@ def describe(name, cfg, out_root, workers=16, pixel_n=500, verify=False, duplica
     info = {"dataset": name, "source": source, "format": spec.get("format", "folder"),
             "split": ("given val folder" if val_pool else
                       f"{cfg['val_split']:.0%} stratified hold-out, seed {cfg['seed']}"
-                      + (", train + test pooled" if "pooled" in source else "")),
+                      + (", existing splits pooled" if "pooled" in source else "")),
             **distribution_stats(rows)}
     problems = []
     if scan:
