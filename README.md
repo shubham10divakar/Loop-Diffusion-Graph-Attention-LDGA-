@@ -211,6 +211,37 @@ python downloads.py --dataset cub200 flowers102 aircraft food101
 
 All commands below run from the repo root. `run_commands.txt` has them in one place.
 
+### 5.0 Quick start: plant pathology
+
+```bash
+python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021   # look at the data first
+python train.py --config config.yaml --dataset plant-pathology-2020
+python train.py --config config.yaml --dataset plant-pathology-2021 --save-every-steps 500
+```
+
+With `--config config.yaml`, all of the following is **on by default**; no extra flags are needed:
+
+| feature | default |
+|---|---|
+| early stopping | `early_stopping: true`, `patience: 15`, `monitor: val_acc`, `min_delta: 0.0` |
+| checkpoint every epoch | `save_every: 1`, `keep_checkpoints: 0` (keep all) |
+| best / latest checkpoint | `best.pt` (whenever val acc improves), `last.pt` (every epoch and on Ctrl+C) |
+| resume | `resume: auto`: re-run the same command to continue from `last.pt`, also mid-epoch |
+| console logs and log files | per-epoch summary; `log.csv`, `metrics.jsonl`, `run_history.log` |
+| graphs | `training_curves.png`, `theta_heatmap.png` and `freq_response.png` every epoch; `class_distribution.png` at the start |
+| final evaluation | `final_eval: true`: `best.pt` gets the full metric report (§5.10) in `eval/best/` |
+
+Not on by default: `save_every_steps: 0`, so `last.pt` is only written at the end of each
+epoch. Add `--save-every-steps 500` for large datasets (plant-pathology-2021, cassava,
+PlantVillage), so a crash loses at most 500 steps.
+
+Tips:
+* **Disk space:** each checkpoint holds the model and optimizer state, roughly 120 MB
+  (estimate). Keeping every epoch of 100 costs about 12 GB per run;
+  `--keep-checkpoints 10` keeps only the newest 10 (`best.pt` / `last.pt` are always kept).
+* **GPU memory:** if CUDA runs out of memory, use `--batch-size 32`.
+* **Windows data loading:** if training hangs at the first batch, use `--num-workers 0`.
+
 ### 5.1 Tests (CPU, a few seconds; T11 also uses CUDA fp16 when available)
 
 ```bash
@@ -520,10 +551,22 @@ call the model "continuous-time" or an "ODE solver"; with `--loop-relax` it is a
 efficiency claim belongs to the exit and must come from the Pareto plot. Say "attention graph",
 not "topology".
 
-**Status:**
-* **Done:** the implementation is complete and all 80 tests pass. 2-epoch smoke runs of every
-  variant, resume, predict and analyze worked, including on `plant-pathology-2021`.
-* **Next:** full training runs, starting with the plant-pathology datasets. H1–H4 are untested.
+**Status** (2026-10-02):
+* **Done:**
+  * the model and all variants; all 80 tests pass
+  * the dataset registry (`datasets.yaml`) with the pooled 90 / 10 split
+  * the evaluation pipeline (`evaluate.py`, final evaluation at the end of training)
+  * the dataset description (`describe_dataset.py`)
+  * smoke runs of every variant, resume, predict, analyze and evaluate, including on
+    `plant-pathology-2020` / `-2021`
+* **Data findings:**
+  * plant-pathology-2021 is heavily imbalanced (55.5x), so report macro F1, MCC and balanced
+    accuracy alongside accuracy
+  * both plant-pathology sets contain duplicate images with conflicting labels (§4.1); they
+    are kept as is
+* **Next:** full training runs, starting with plant pathology (§5.0, §5.12). H1–H4 are untested.
+* **Open decision:** whether to drop the conflicting duplicates before splitting. Decide
+  before the real runs, because it changes the split.
 * **Not done:** a Kaggle single-file export (optional phase 6 of the design doc).
 
 ## 10. Credits
