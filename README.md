@@ -28,6 +28,26 @@ gpr   free θ_m                                  learned; can be high-pass, e.g.
   `‖z_t − z_{t−1}‖ / ‖z_{t−1}‖ < ε`. This can be combined with the paper's entropy exit.
 * Optional **loop relaxation** (eq. C2): `z_{t+1} = z_t + η_t (M_θ(z_t + e_t) − z_t)`, η = 1 at init.
 
+### LDGA-gpr, the main method
+
+"GPR" stands for **Generalized PageRank** (from GPR-GNN): the coefficients of the graph filter
+are learned instead of fixed. LDGA applies this to the **self-attention graph of a looped,
+weight-tied ViT** instead of a fixed input graph.
+
+* **ppr and heat** fix the shape of θ and learn one scalar (α or τ). The filter is always
+  **low-pass**: it can only smooth.
+* **gpr** leaves every θ_m free, and θ_m can be negative. The filter can then be **high-pass** or
+  band-pass. For example, θ = (1, −1) gives `(I − A)V`, which sharpens differences between
+  tokens instead of averaging them. This lets the model counteract the smoothing the loop causes.
+* **Init:** θ = (0, 1, 0, 0), so `out = A·V`, exactly vanilla LoopViT. Any change in behaviour
+  is learned. `--gpr-init ppr` starts from PPR coefficients instead.
+* **`per_step` schedule** (`--variant ldga`): every loop iteration has its own θ, so the filter
+  can change over "diffusion time", e.g. become more high-pass at later steps (H2).
+  `--variant ldga-gpr-shared` uses one θ per (block, head) for every iteration, to measure what
+  the schedule adds.
+* **Cost:** (M+1) scalars per head per block (96 shared / 288 per-step with the defaults), and
+  about +6 % FLOPs per hop. It is compared against vanilla LoopViT at `dim 408` so compute is matched.
+
 ---
 
 ## 1. Files
@@ -104,6 +124,27 @@ so it is identical across variants and in `analyze_ldga.py`. With `--merge-split
 default), a dataset's `train/` and `test/` (or `val/`, `valid/`) folders are pooled first. Use
 `--merge-splits false` to keep its own test folder as the validation set. The Kaggle test
 sets (plant-pathology, cassava) have no labels, so only their train CSV is used.
+
+### 4.1 Plant-pathology datasets
+
+| dataset | classes (images) |
+|---|---|
+| `plant-pathology-2020` (FGVC7) | healthy (516), multiple_diseases (91), rust (622), scab (592) |
+| `plant-pathology-2021` (FGVC8) | scab (4826), healthy (4624), frog_eye_leaf_spot (3181), rust (1860), complex (1602), powdery_mildew (1184), scab+frog_eye_leaf_spot (686), scab+frog_eye_leaf_spot+complex (200), frog_eye_leaf_spot+complex (165), rust+frog_eye_leaf_spot (120), rust+complex (97), powdery_mildew+complex (87) |
+
+* **Labels:** FGVC7 stores them as one-hot columns, and every image has exactly one.
+* **Multi-label images:** about 1,350 FGVC8 images have more than one disease
+  (`scab frog_eye_leaf_spot`). Each label **combination** is treated as its own class
+  (`scab+frog_eye_leaf_spot`), which is the usual single-label setup and gives 12 classes.
+  True multi-label training (sigmoid + BCE) is not implemented.
+* **Test sets:** both Kaggle test sets are unlabelled (FGVC8 ships only 3 test images), so only
+  `train.csv` is used, split 90 / 10.
+* **Class imbalance:** both datasets are imbalanced (e.g. `multiple_diseases` has 91 images,
+  9 of them in validation), so look at per-class results, not only overall accuracy.
+* **Image size:** the images are large (FGVC7 2048×1365, FGVC8 up to 4000×2672), so keep
+  `fast_decode: true`. If the GPU is still waiting on data, raise `--num-workers`.
+
+### 4.2 Lookup rules
 
 * To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
   file header documents the keys).
@@ -269,7 +310,31 @@ Outputs:
 | `eta.png` | learned η_t (runs with `--loop-relax`) |
 | `summary.json` | every number behind the figures |
 
-### 5.11 Replication: PlantVillage runs
+### 5.11 Plant pathology (every variant, same pooled 90 / 10 split)
+
+```bash
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plant-pathology-2020
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-ppr
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant ldga-heat
+
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant loopvit
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant loopvit --dim 408 --output-dir runs/loopvit-cm_plant-pathology-2021
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-gpr-shared
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-ppr
+python train.py --config config.yaml --dataset plant-pathology-2021 --variant ldga-heat
+
+# compare them
+python analyze_ldga.py --ckpt runs/loopvit_plant-pathology-2021/best.pt runs/ldga-ppr_plant-pathology-2021/best.pt runs/ldga-heat_plant-pathology-2021/best.pt runs/ldga_plant-pathology-2021/best.pt                        --labels vanilla ppr heat gpr --out-dir analysis/plant-pathology-2021
+```
+
+Add `--save-every-steps 500` to the FGVC8 runs so that a crash loses at most 500 steps.
+`analyze_ldga.py` rebuilds the same validation split from the checkpoint's saved settings.
+
+### 5.12 Replication: PlantVillage runs
 
 Same settings as the design A replication (100 epochs, batch 16, checkpoint every epoch,
 early stop on val loss with patience 10, auto-resume). Only `--variant` and `--output-dir`
@@ -314,7 +379,7 @@ Files in `runs/<name>/`: `log.csv`, `metrics.jsonl` (full per-epoch record inclu
 
 | group | keys (defaults) |
 |---|---|
-| data | `dataset`, `data_root: datasets`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4` |
+| data | `dataset`, `dataset_registry: datasets.yaml`, `data_root: datasets`, `merge_splits: true`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4`, `fast_decode: true` |
 | model | `image_size: 224`, `patch_size: 16`, `dim: 384`, `core_depth: 4` (B), `loop_steps: 3` (T), `num_heads: 6`, `mlp_ratio: 4.0`, `dropout`, `attn_dropout`, `drop_path: 0.1`, `ffn: hybrid`, `rope: true`, `step_embedding: true`, `num_cls_tokens: 1`, `pool: cls` |
 | LDGA | `variant`, `diffusion: gpr`, `diff_hops: 3`, `diff_heads: -1`, `diff_schedule: per_step`, `diff_renorm: true`, `diff_impl: sdpa`, `ppr_alpha_init: 0.2`, `heat_tau_init: 1.0`, `gpr_init: vanilla`, `loop_relax: false` |
 | exit | `exit_mode: entropy`, `exit_tau: 0.05`, `exit_fp_eps: 0.01`, `min_loop_steps: 1`, `max_loop_steps: 0` (= T), `eval_dynamic_exit: true`, `eval_extrapolate: true`, `eval_diag_images: 512` |
@@ -344,7 +409,35 @@ Files in `runs/<name>/`: `log.csv`, `metrics.jsonl` (full per-epoch record inclu
 * **The frequency response is nominal.** A is non-symmetric; `g(λ)` is evaluated on the real
   line and always plotted over the actual eigenvalue distribution (doc §13).
 
-## 9. Credits
+## 9. Hypotheses and status
+
+Hypotheses (design doc §11.4), stated before running:
+
+* **H1:** pure low-pass diffusion (ppr / heat) *increases* oversmoothing and does not beat
+  vanilla. LDGA-gpr beats vanilla at matched compute.
+* **H2:** learned gpr filters develop **negative / high-pass** components, stronger at later loop
+  steps (`per_step`).
+* **H3:** LDGA-gpr keeps Dirichlet energy and effective rank higher across unrolled depth, and
+  degrades less when run for more loop steps than it was trained with (T > T_train).
+* **H4:** the fixed-point exit (alone or with entropy) matches or beats the entropy-only exit on
+  the accuracy vs `block_apps` curve.
+
+H1's first half predicts a negative result for ppr / heat. That is intended, because it
+motivates the learned filter; report it as it comes out.
+
+Claims to avoid (doc §13): the frequency response is **nominal** (A is non-symmetric). Don't
+call the model "continuous-time" or an "ODE solver"; with `--loop-relax` it is an
+*Euler-style reading*. Don't claim efficiency for LDGA itself, because it adds FLOPs; any
+efficiency claim belongs to the exit and must come from the Pareto plot. Say "attention graph",
+not "topology".
+
+**Status:**
+* **Done:** the implementation is complete and all 80 tests pass. 2-epoch smoke runs of every
+  variant, resume, predict and analyze worked, including on `plant-pathology-2021`.
+* **Next:** full training runs, starting with the plant-pathology datasets. H1–H4 are untested.
+* **Not done:** a Kaggle single-file export (optional phase 6 of the design doc).
+
+## 10. Credits
 
 The base architecture is LoopViT:
 
