@@ -68,3 +68,10 @@ python evaluate.py --ckpt runs/loopvit_plant-pathology-2021 runs/loopvit-cm_plan
 python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021
 python describe_dataset.py --dataset plant-pathology-2020 plant-pathology-2021 --verify --duplicates
 python describe_dataset.py --all
+
+# ---- SMOTE for minority classes (train split only; runs go to runs/<variant>_<dataset>_smote) ----
+python train.py --config config.yaml --dataset plant-pathology-2020 --smote true
+python train.py --config config.yaml --dataset plant-pathology-2020 --variant loopvit --smote true
+python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --save-every-steps 500
+python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --smote-target median --save-every-steps 500
+python evaluate.py --ckpt runs/ldga_plant-pathology-2020 runs/ldga_plant-pathology-2020_smote --labels LDGA LDGA+SMOTE --summary-dir evaluation/plant-pathology-2020-smote

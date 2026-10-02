@@ -35,6 +35,9 @@ Configurable:
   * val_split        - fraction of each class held out for validation
   * fast_decode      - decode JPEGs at a reduced scale (>= 2x image_size); large speed-up
                        for the 2k-4k px plant-pathology / cassava photos
+  * smote            - add SMOTE images (blends of same-class nearest neighbours) to the
+                       minority classes of the train split, up to smote_target images per
+                       class (max | median | an image count). Validation is never touched.
 """
 from __future__ import annotations
 
@@ -278,6 +281,66 @@ def load_image(path: str, draft: int | None = None) -> Image.Image:
         return img.convert("RGB")
 
 
+class SmotePair:
+    """A synthetic SMOTE sample: x = (1 - lam) * a + lam * b, with b one of the k nearest
+    same-class neighbours of a. Both images are resized to `size` x `size` before
+    blending; the normal train transform (crop, flips, ...) is then applied to the result."""
+
+    def __init__(self, a: str, b: str, lam: float, size: int):
+        self.a, self.b, self.lam, self.size = a, b, lam, size
+
+    def load(self, draft: int | None = None) -> Image.Image:
+        ia = load_image(self.a, draft).resize((self.size, self.size), Image.BILINEAR)
+        ib = load_image(self.b, draft).resize((self.size, self.size), Image.BILINEAR)
+        return Image.blend(ia, ib, self.lam)
+
+    def __repr__(self):
+        return f"SmotePair({os.path.basename(self.a)}, {os.path.basename(self.b)}, {self.lam:.2f})"
+
+
+def _thumb(path: str, side: int = 16) -> torch.Tensor:
+    with Image.open(long_path(path)) as im:
+        im.draft("RGB", (4 * side, 4 * side))       # JPEG: decode at reduced scale, not 4000 px
+        im = im.convert("RGB").resize((side, side), Image.BILINEAR)
+        return torch.frombuffer(bytearray(im.tobytes()), dtype=torch.uint8).float() / 255.0
+
+
+def smote_goal(counts, target) -> int:
+    if target == "max":
+        return max(counts)
+    if target == "median":
+        return int(sorted(counts)[len(counts) // 2])
+    return int(target)
+
+
+def smote_samples(by_class: dict, target, k: int, seed: int, size: int, workers: int = 16):
+    """SMOTE (Chawla et al., 2002) on images: for every class with fewer than `target`
+    train images, add synthetic samples that interpolate an image with one of its k
+    nearest same-class neighbours. Neighbours are found on 16x16 RGB thumbnails.
+
+    by_class: {label: [paths]}; target: "max" | "median" | int.
+    Returns [(SmotePair, label)], deterministic in `seed`."""
+    from concurrent.futures import ThreadPoolExecutor
+    goal = smote_goal([len(p) for p in by_class.values()], target)
+    rng = random.Random(seed)
+    out = []
+    for c in sorted(by_class):
+        paths = by_class[c]
+        need = goal - len(paths)
+        if need <= 0 or len(paths) < 2:
+            continue
+        with ThreadPoolExecutor(workers) as ex:
+            feats = torch.stack(list(ex.map(_thumb, paths, chunksize=32)))
+        dist = torch.cdist(feats, feats)
+        dist.fill_diagonal_(float("inf"))
+        nn_idx = dist.topk(min(k, len(paths) - 1), largest=False).indices.tolist()
+        for _ in range(need):
+            i = rng.randrange(len(paths))
+            j = rng.choice(nn_idx[i])
+            out.append((SmotePair(paths[i], paths[j], rng.random(), size), c))
+    return out
+
+
 class SampleListDataset(Dataset):
     def __init__(self, samples, classes, transform=None, draft: int | None = None):
         self.samples = samples          # list of (path, label)
@@ -290,7 +353,7 @@ class SampleListDataset(Dataset):
 
     def __getitem__(self, i):
         path, label = self.samples[i]
-        img = load_image(path, self.draft)
+        img = path.load(self.draft) if isinstance(path, SmotePair) else load_image(path, self.draft)
         if self.transform is not None:
             img = self.transform(img)
         return img, label
@@ -366,12 +429,21 @@ def split_samples(pool, val_pool=None, num_classes=None, class_selection="first"
 def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
                       num_workers=4, num_classes=None, class_selection="first",
                       classes=None, max_per_class=None, val_split=0.1,
-                      augment="basic", seed=42, pin_memory=True, fast_decode=True):
+                      augment="basic", seed=42, pin_memory=True, fast_decode=True,
+                      smote=False, smote_k=5, smote_target="max"):
     """pool / val_pool: {class name: [paths]} from `collect_samples`."""
     train_tf, eval_tf = build_transforms(image_size, augment)
     draft = 2 * image_size if fast_decode else None
     train_samples, val_samples, chosen, all_classes = split_samples(
         pool, val_pool, num_classes, class_selection, classes, max_per_class, val_split, seed)
+    n_real = len(train_samples)
+    if smote:
+        by_label = defaultdict(list)
+        for p, y in train_samples:
+            by_label[y].append(p)
+        print(f"[data] SMOTE: finding {smote_k} nearest neighbours per image ...")
+        synth = smote_samples(by_label, smote_target, smote_k, seed, int(round(image_size / 0.875)))
+        train_samples = train_samples + synth
 
     train_ds = SampleListDataset(train_samples, chosen, train_tf, draft)
     val_ds = SampleListDataset(val_samples, chosen, eval_tf, draft) if val_samples else None
@@ -392,6 +464,9 @@ def build_dataloaders(pool, val_pool=None, image_size=224, batch_size=64,
     for _, y in val_samples:
         va_counts[y] += 1
     print(f"[data] {len(all_classes)} classes in the dataset; using {len(chosen)}")
+    if smote:
+        print(f"[data] SMOTE (k={smote_k}, target={smote_target}): +{len(train_samples) - n_real} "
+              f"synthetic train images for minority classes ({n_real} real)")
     print(f"[data] train images: {len(train_ds)} | val images: {len(val_samples)}"
           f" ({'given val split' if val_pool else f'{val_split:.0%} stratified split, seed {seed}'})")
     preview = ", ".join(f"{c}={tr_counts[i]}/{va_counts[i]}" for i, c in enumerate(chosen[:12]))

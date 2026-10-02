@@ -18,6 +18,10 @@ val_split: 0.1                 # fraction of every class held out for validation
 augment: basic                 # none | basic | trivial
 num_workers: 4                 # use 0 on Windows if worker startup stalls
 fast_decode: true              # decode JPEGs at >= 2x image_size (big speed-up on 2k-4k px photos)
+smote: false                   # true = add SMOTE images (same-class nearest-neighbour blends) to minority
+                               #   classes of the train split; val untouched; runs go to runs/<variant>_<dataset>_smote
+smote_k: 5                     # nearest neighbours (on 16x16 thumbnails)
+smote_target: max              # grow every train class to: max | median | an image count
 
 # ---------------- model ----------------
 image_size: 224

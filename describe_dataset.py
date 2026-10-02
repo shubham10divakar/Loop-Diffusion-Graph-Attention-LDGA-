@@ -54,11 +54,21 @@ def _plt():
 # class distribution (cheap: no image is opened). Also used by train.py.
 # --------------------------------------------------------------------------- #
 def class_distribution(train_samples, val_samples, names):
-    tr, va = Counter(y for _, y in train_samples), Counter(y for _, y in val_samples)
-    total = len(train_samples) + len(val_samples)
-    return [{"class": n, "total": tr[i] + va[i], "train": tr[i], "val": va[i],
+    """Real images per class (total = train + val). SMOTE images in train_samples are
+    counted separately in a 'smote' column (only present when there are any)."""
+    from data import SmotePair
+    synth = Counter(y for p, y in train_samples if isinstance(p, SmotePair))
+    tr = Counter(y for p, y in train_samples if not isinstance(p, SmotePair))
+    va = Counter(y for _, y in val_samples)
+    total = sum(tr.values()) + sum(va.values())
+    rows = [{"class": n, "total": tr[i] + va[i], "train": tr[i], "val": va[i],
              "share_%": round(100 * (tr[i] + va[i]) / max(total, 1), 2)}
             for i, n in enumerate(names)]
+    if synth:
+        for i, r in enumerate(rows):
+            r["smote"] = synth[i]
+            r["train_with_smote"] = tr[i] + synth[i]
+    return rows
 
 
 def distribution_stats(rows):
@@ -76,11 +86,15 @@ def distribution_stats(rows):
 
 def distribution_table(rows) -> str:
     w = max(len("class"), max(len(r["class"]) for r in rows)) + 2
-    lines = [f"{'class':<{w}}{'total':>8}{'train':>8}{'val':>7}{'share':>8}"]
+    sm = "smote" in rows[0]
+    lines = [f"{'class':<{w}}{'total':>8}{'train':>8}{'val':>7}{'share':>8}"
+             + (f"{'+smote':>8}{'train used':>12}" if sm else "")]
     lines += [f"{r['class']:<{w}}{r['total']:>8}{r['train']:>8}{r['val']:>7}{r['share_%']:>7.2f}%"
-              for r in rows]
+              + (f"{r['smote']:>8}{r['train_with_smote']:>12}" if sm else "") for r in rows]
     s = distribution_stats(rows)
-    lines.append(f"{'TOTAL':<{w}}{s['images']:>8}{s['train']:>8}{s['val']:>7}{100:>7.2f}%")
+    lines.append(f"{'TOTAL':<{w}}{s['images']:>8}{s['train']:>8}{s['val']:>7}{100:>7.2f}%"
+                 + (f"{sum(r['smote'] for r in rows):>8}{sum(r['train_with_smote'] for r in rows):>12}"
+                    if sm else ""))
     return "\n".join(lines)
 
 
@@ -96,12 +110,18 @@ def write_class_distribution(rows, out_dir, title=""):
         order = sorted(range(C), key=lambda i: -rows[i]["total"])
         fig, ax = plt.subplots(figsize=(8, max(3.0, 0.3 * C + 1.4)))
         yy = np.arange(C)
-        tr = [rows[i]["train"] for i in order]
-        va = [rows[i]["val"] for i in order]
+        tr = np.array([rows[i]["train"] for i in order])
+        va = np.array([rows[i]["val"] for i in order])
         ax.barh(yy, tr, label="train")
         ax.barh(yy, va, left=tr, label="val")
-        for y, i in zip(yy, order):
-            ax.text(rows[i]["total"], y, f" {rows[i]['total']}", va="center", fontsize=7)
+        end = tr + va
+        if "smote" in rows[0]:
+            sm = np.array([rows[i]["smote"] for i in order])
+            ax.barh(yy, sm, left=end, label="SMOTE (synthetic, train)", alpha=0.45, hatch="//")
+            end = end + sm
+        for y, i, e in zip(yy, order, end):
+            ax.text(e, y, f" {rows[i]['total']}" + (f" (+{rows[i]['smote']})" if rows[i].get("smote") else ""),
+                    va="center", fontsize=7)
         ax.set_yticks(yy, [rows[i]["class"] for i in order], fontsize=7 if C > 15 else 8)
         ax.invert_yaxis()
         ax.set_xlabel("images")

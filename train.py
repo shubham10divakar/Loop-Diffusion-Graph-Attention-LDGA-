@@ -120,6 +120,12 @@ def get_args(argv=None):
                         "false = use an existing test/val folder as validation")
     d.add_argument("--fast-decode", type=str2bool, default=True,
                    help="decode JPEGs at reduced scale (>= 2x image size)")
+    d.add_argument("--smote", type=str2bool, default=False,
+                   help="add SMOTE images (same-class nearest-neighbour blends) to minority classes "
+                        "of the train split; validation is untouched")
+    d.add_argument("--smote-k", type=int, default=5, help="SMOTE nearest neighbours")
+    d.add_argument("--smote-target", type=str, default="max",
+                   help="grow each train class to: max | median | an image count")
     d.add_argument("--train-dir", type=str, default=None, help="overrides --dataset")
     d.add_argument("--val-dir", type=str, default=None)
     d.add_argument("--num-classes", type=int_or_none, default=None, help="use N class folders (default: all)")
@@ -302,7 +308,9 @@ def default_output_dir(args) -> str:
     else:
         tag = "run"
     tag = tag.replace("/", "_").replace("\\", "_").replace(" ", "_")
-    return os.path.join("runs", f"{run_name(args)}_{tag}")
+    smote = (f"_smote{'' if str(args.smote_target) == 'max' else '-' + str(args.smote_target)}"
+             if args.smote else "")
+    return os.path.join("runs", f"{run_name(args)}_{tag}{smote}")
 
 
 def atomic_save(obj, path: str):
@@ -503,7 +511,8 @@ def main():
             pool, val_pool, args.image_size, args.batch_size,
             args.num_workers, args.num_classes, args.class_selection, args.classes,
             args.max_per_class, args.val_split, args.augment, args.seed,
-            pin_memory=device.type == "cuda", fast_decode=args.fast_decode)
+            pin_memory=device.type == "cuda", fast_decode=args.fast_decode,
+            smote=args.smote, smote_k=args.smote_k, smote_target=args.smote_target)
 
     # ---- model --------------------------------------------------------------
     mcfg = LoopViTConfig(
@@ -566,6 +575,14 @@ def main():
             raise SystemExit(f"--resume checkpoint model config does not match the current model "
                              f"args (checkpoint, now): {diff}\nUse a different --output-dir or "
                              f"--resume none for a fresh run.")
+        old = ckpt.get("args") or {}
+        data_diff = {k: (old.get(k, d), getattr(args, k)) for k, d in
+                     (("smote", False), ("smote_k", 5), ("smote_target", "max"))
+                     if str(old.get(k, d)) != str(getattr(args, k))}
+        if data_diff:
+            raise SystemExit(f"--resume checkpoint was trained with other SMOTE settings "
+                             f"(checkpoint, now): {data_diff}\nUse the same settings, a different "
+                             f"--output-dir, or --resume none.")
         model.load_state_dict(ckpt["model"])
         if ckpt.get("optimizer") is not None:
             opt.load_state_dict(ckpt["optimizer"])

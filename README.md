@@ -187,7 +187,42 @@ Overview, with the default 90 / 10 split and seed 42:
 | plantdoc | 27 | 2920 | 2627 | 293 | 42 | 238 | 5.7x | 640x560 | 0.886 |
 | plantvillage | 38 | 54305 | 48875 | 5430 | 152 | 5507 | 36.2x | 256x256 | 0.792 |
 
-### 4.3 Lookup rules
+### 4.3 SMOTE for imbalanced classes (optional, `--smote true`)
+
+SMOTE (Chawla et al., 2002) adapted to images, the same method as design A. For every
+train class smaller than the target, synthetic images are added. Each one blends a real
+image with one of its k nearest neighbours from the same class:
+`x = (1 − λ)·a + λ·b`, with λ ~ U(0, 1) and neighbours found on 16×16 RGB thumbnails.
+The normal train augmentation is then applied to the blend.
+
+```bash
+python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --save-every-steps 500
+python train.py --config config.yaml --dataset plant-pathology-2021 --smote true --smote-target median
+python train.py --config config.yaml --dataset plant-pathology-2020 --smote true --smote-k 5 --smote-target 600
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--smote` | `false` | turn SMOTE on |
+| `--smote-k` | `5` | nearest neighbours to blend with |
+| `--smote-target` | `max` | grow every train class to: the largest class (`max`), the median class (`median`) or an image count |
+
+* **Only the train split changes.** Validation stays real images only, so SMOTE and
+  non-SMOTE runs are scored on the same images.
+* **Deterministic:** the synthetic samples depend only on `seed`, so a resumed run sees
+  the same ones.
+* **Separate run folder:** SMOTE runs default to `runs/<variant>_<dataset>_smote` (or
+  `_smote-median`, `_smote-600`), so they never mix with normal runs. Resume refuses a
+  checkpoint whose SMOTE settings differ.
+* **Visible split:** the per-class table at start-up and `class_distribution.csv` / `.png`
+  show the real and synthetic images separately (`+smote`, `train used` columns, hatched bars).
+* **Epoch size:** with `max`, every class grows to the largest one.
+  * plant-pathology-2020: +601 images (1,639 → 2,240 train).
+  * plant-pathology-2021: +35,347 images (16,769 → 52,116), so each epoch takes about 3×
+    longer. `--smote-target median` adds only 5,177.
+  * The neighbour search takes about 20 s on plant-pathology-2021.
+
+### 4.4 Lookup rules
 
 * To add a dataset, add an entry to `datasets.yaml` (`format: folder` or `format: csv`; the
   file header documents the keys).
@@ -498,7 +533,7 @@ evaluation, §5.10), `log.csv`, `metrics.jsonl` (full per-epoch record including
 
 | group | keys (defaults) |
 |---|---|
-| data | `dataset`, `dataset_registry: datasets.yaml`, `data_root: datasets`, `merge_splits: true`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4`, `fast_decode: true` |
+| data | `dataset`, `dataset_registry: datasets.yaml`, `data_root: datasets`, `merge_splits: true`, `train_dir`, `val_dir`, `num_classes`, `class_selection: first`, `classes`, `max_per_class`, `val_split: 0.1`, `augment: basic`, `num_workers: 4`, `fast_decode: true`, `smote: false`, `smote_k: 5`, `smote_target: max` |
 | model | `image_size: 224`, `patch_size: 16`, `dim: 384`, `core_depth: 4` (B), `loop_steps: 3` (T), `num_heads: 6`, `mlp_ratio: 4.0`, `dropout`, `attn_dropout`, `drop_path: 0.1`, `ffn: hybrid`, `rope: true`, `step_embedding: true`, `num_cls_tokens: 1`, `pool: cls` |
 | LDGA | `variant`, `diffusion: gpr`, `diff_hops: 3`, `diff_heads: -1`, `diff_schedule: per_step`, `diff_renorm: true`, `diff_impl: sdpa`, `ppr_alpha_init: 0.2`, `heat_tau_init: 1.0`, `gpr_init: vanilla`, `loop_relax: false` |
 | evaluation | `final_eval: true`, `final_eval_ckpt: best`, `eval_bootstrap: 1000` |
@@ -557,6 +592,7 @@ not "topology".
   * the dataset registry (`datasets.yaml`) with the pooled 90 / 10 split
   * the evaluation pipeline (`evaluate.py`, final evaluation at the end of training)
   * the dataset description (`describe_dataset.py`)
+  * optional SMOTE for minority classes (`--smote true`, §4.3)
   * smoke runs of every variant, resume, predict, analyze and evaluate, including on
     `plant-pathology-2020` / `-2021`
 * **Data findings:**
